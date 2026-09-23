@@ -1,0 +1,3 @@
+# Projet en phase de préparation : aucune dépendance installée et validée à ce stade.
+# Ajouter ici les versions exactes de PyQt6 et du connecteur mariadb après les premiers essais.
+# Les modules standards socket, json et threading ne doivent pas être listés ici.

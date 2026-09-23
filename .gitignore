@@ -1,0 +1,30 @@
+# Environnement Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Configuration locale et secrets
+.env
+.env.*
+!.env.example
+config.local.json
+*.pem
+*.key
+
+# IDE et système
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Données et journaux locaux
+*.log
+*.db
+*.sqlite
+*.sqlite3
