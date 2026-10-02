@@ -1,6 +1,6 @@
 import sys
 import math
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QPen
 from PyQt6.QtWidgets import (
     QApplication,
@@ -88,7 +88,7 @@ class FenetrePrincipale(QMainWindow):
         self.resize(1000, 700)
 
         self.scene = QGraphicsScene()
-        self.scene.setSceneRect(0, 0, 900, 550)
+        self.scene.setSceneRect(0, 0, 900, 610)
         self.scene.setBackgroundBrush(QColor("#eaf0f2"))
 
         self.vue = QGraphicsView(self.scene)
@@ -102,6 +102,11 @@ class FenetrePrincipale(QMainWindow):
         self.dessiner_carrefours()
         self.dessiner_ambulance()
         self.dessiner_informations()
+
+        # Le timer laisse l'interface disponible pendant le déplacement.
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.avancer_ambulance)
+        self.timer.start(30)
 
     def route_dans_chemin(self, depart, arrivee):
         return (
@@ -212,6 +217,7 @@ class FenetrePrincipale(QMainWindow):
                 feu.setPen(QPen(QColor("#7f1d1d"), 1))
                 self.scene.addItem(feu)
     def dessiner_ambulance(self):
+        """Dessine le véhicule au début de la première route."""
         if not self.chemin:
             return
 
@@ -223,6 +229,11 @@ class FenetrePrincipale(QMainWindow):
         longueur = math.hypot(x2 - x1, y2 - y1)
         direction_x = (x2 - x1) / longueur
         direction_y = (y2 - y1) / longueur
+
+        self.distance_ambulance = 70.0
+        # Centre à 78 pixels du carrefour : l'avant reste avant le feu
+        # situé à 60 pixels, ainsi qu'avant le passage piéton.
+        self.distance_arret = longueur - 78
 
         # Position sur le côté droit de la route
         x = x1 + direction_x * 70 - direction_y * 8
@@ -256,6 +267,34 @@ class FenetrePrincipale(QMainWindow):
         self.ambulance.setZValue(10)
 
         self.scene.addItem(self.ambulance)
+    def avancer_ambulance(self):
+        """Avance sur la première route et s'arrête au premier feu rouge."""
+        if not self.chemin:
+            self.timer.stop()
+            return
+
+        depart, arrivee = self.chemin[0]
+        x1, y1 = POINTS[depart]
+        x2, y2 = POINTS[arrivee]
+        longueur = math.hypot(x2 - x1, y2 - y1)
+        direction_x = (x2 - x1) / longueur
+        direction_y = (y2 - y1) / longueur
+
+        # Vitesse visuelle : 1 pixel toutes les 30 millisecondes.
+        # Les temps utilisés par Dijkstra restent des exemples fixes.
+        self.distance_ambulance = min(
+            self.distance_ambulance + 1, self.distance_arret
+        )
+        x = x1 + direction_x * self.distance_ambulance - direction_y * 8
+        y = y1 + direction_y * self.distance_ambulance + direction_x * 8
+        self.ambulance.setPos(x - 12, y - 5)
+
+        if self.distance_ambulance >= self.distance_arret:
+            self.timer.stop()
+            self.texte_etat.setPlainText(
+                f"Ambulance arrêtée au feu rouge de {arrivee}"
+            )
+
     def dessiner_carrefours(self):
         for nom, (x, y) in POINTS.items():
             taille = 42
@@ -301,6 +340,11 @@ class FenetrePrincipale(QMainWindow):
         texte_chemin.setDefaultTextColor(QColor("#168bd1"))
         texte_chemin.setPos(30, 530)
         self.scene.addItem(texte_chemin)
+
+        self.texte_etat = QGraphicsTextItem("Ambulance en approche du premier feu")
+        self.texte_etat.setDefaultTextColor(QColor("#193047"))
+        self.texte_etat.setPos(30, 560)
+        self.scene.addItem(self.texte_etat)
 
 
 def main():
