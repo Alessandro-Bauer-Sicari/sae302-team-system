@@ -96,6 +96,10 @@ class FenetrePrincipale(QMainWindow):
 
         self.chemin, self.temps_total = calculer_chemin("A", "B")
 
+        self.feux = {}
+        self.feu_prioritaire = None
+        self.priorite_active = False
+
         self.dessiner_routes()
         self.dessiner_passages_pietons()
         self.dessiner_feux()
@@ -216,6 +220,8 @@ class FenetrePrincipale(QMainWindow):
                 feu.setBrush(QBrush(QColor("#e53935")))
                 feu.setPen(QPen(QColor("#7f1d1d"), 1))
                 self.scene.addItem(feu)
+
+                self.feux[(nom, voisin)] = feu
     def dessiner_ambulance(self):
         """Dessine le véhicule au début de la première route."""
         if not self.chemin:
@@ -225,6 +231,8 @@ class FenetrePrincipale(QMainWindow):
         depart, arrivee = self.chemin[0]
         x1, y1 = POINTS[depart]
         x2, y2 = POINTS[arrivee]
+
+        self.feu_prioritaire = self.feux.get((arrivee, depart))
 
         longueur = math.hypot(x2 - x1, y2 - y1)
         direction_x = (x2 - x1) / longueur
@@ -280,20 +288,43 @@ class FenetrePrincipale(QMainWindow):
         direction_x = (x2 - x1) / longueur
         direction_y = (y2 - y1) / longueur
 
+        distance_restante = longueur - self.distance_ambulance
+
+        if not self.priorite_active and distance_restante <= 160:
+            self.priorite_active = True
+
+            if self.feu_prioritaire is not None:
+                self.feu_prioritaire.setBrush(QBrush(QColor("#36d68c")))
+                self.feu_prioritaire.setPen(QPen(QColor("#16784d"), 1))
+
+            self.texte_etat.setPlainText(
+                f"Ambulance détectée : priorité activée au carrefour {arrivee}"
+            )
+
+        if self.priorite_active:
+            distance_limite = longueur + 35
+        else:
+            distance_limite = self.distance_arret
+
         # Vitesse visuelle : 1 pixel toutes les 30 millisecondes.
-        # Les temps utilisés par Dijkstra restent des exemples fixes.
         self.distance_ambulance = min(
-            self.distance_ambulance + 1, self.distance_arret
+            self.distance_ambulance + 1, distance_limite
         )
         x = x1 + direction_x * self.distance_ambulance - direction_y * 8
         y = y1 + direction_y * self.distance_ambulance + direction_x * 8
         self.ambulance.setPos(x - 12, y - 5)
 
-        if self.distance_ambulance >= self.distance_arret:
+        if self.distance_ambulance >= distance_limite:
             self.timer.stop()
-            self.texte_etat.setPlainText(
-                f"Ambulance arrêtée au feu rouge de {arrivee}"
-            )
+
+            if self.priorite_active:
+                self.texte_etat.setPlainText(
+                    f"Ambulance passée au carrefour {arrivee}"
+                )
+            else:
+                self.texte_etat.setPlainText(
+                    f"Ambulance arrêtée au feu rouge de {arrivee}"
+                )
 
     def dessiner_carrefours(self):
         for nom, (x, y) in POINTS.items():
