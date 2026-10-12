@@ -1,10 +1,11 @@
-"""Deuxième étape : cycle des feux et dessin d'un carrefour unique avec PyQt6.
+"""Troisième étape : voitures et feux d'un carrefour unique avec PyQt6.
 
 Lancement : python src/interface/main.py
 Les axes nord-sud et est-ouest passent au vert à tour de rôle.
 """
 
 import sys
+import random
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
@@ -16,6 +17,13 @@ from PyQt6.QtWidgets import (
 TAILLE = 800
 CENTRE = TAILLE // 2
 DEMI_ROUTE = 90
+LONGUEUR_VOITURE = 32
+LARGEUR_VOITURE = 18
+DISTANCE_ARRET = 235  # Distance du centre de la voiture depuis son entrée.
+DISTANCE_SORTIE = 565  # La voiture entière a quitté la zone de traversée.
+ESPACEMENT = 48  # Distance minimale entre les centres de deux voitures.
+PAS_TEMPS = 0.04  # Une étape de simulation toutes les 40 ms.
+VITESSE = 60  # Pixels par seconde de simulation.
 
 
 # Chaque phase : (description, couleur nord-sud, couleur est-ouest, durée).
@@ -51,6 +59,7 @@ class FenetrePrincipale(QMainWindow):
 
         # Chaque direction possède un feu, stocké pour les prochaines étapes.
         self.feux = {}
+        self.voitures = []
         self.dessiner_carrefour()
 
         # On démarre avec une seconde de rouge pour les quatre directions.
@@ -64,6 +73,16 @@ class FenetrePrincipale(QMainWindow):
         self.minuteur.setTimerType(Qt.TimerType.PreciseTimer)
         self.minuteur.timeout.connect(self.avancer_cycle)
         self.minuteur.start(1000)
+
+        # Le dessin des voitures est actualisé plus souvent que les feux.
+        self.animation = QTimer(self)
+        self.animation.timeout.connect(self.avancer_voitures)
+        self.animation.start(int(PAS_TEMPS * 1000))
+
+        self.arrivees = QTimer(self)
+        self.arrivees.timeout.connect(self.ajouter_voitures)
+        self.arrivees.start(1800)
+        self.ajouter_voitures()
 
     def rectangle(self, x, y, largeur, hauteur, couleur):
         """Ajoute un rectangle sans contour dans la scène."""
@@ -166,6 +185,11 @@ class FenetrePrincipale(QMainWindow):
         """Décompte une seconde et change de phase lorsque le délai expire."""
         self.temps_restant -= 1
         if self.temps_restant <= 0:
+            # Ne pas libérer l'autre axe si une voiture traverse encore.
+            if self.phase in (2, 5) and self.carrefour_occupe():
+                self.temps_restant = 0
+                self.afficher_etat()
+                return
             # Le modulo permet de revenir au début après la dernière phase.
             self.phase = (self.phase + 1) % len(PHASES)
             self.temps_restant = PHASES[self.phase][3]
@@ -175,9 +199,91 @@ class FenetrePrincipale(QMainWindow):
     def afficher_etat(self):
         """Affiche la phase et son temps restant en bas de la fenêtre."""
         description = PHASES[self.phase][0]
+        if self.phase in (2, 5) and self.temps_restant == 0:
+            description = "Tous rouges : attente de la fin des traversées"
         self.statusBar().showMessage(
             f"{description} | Temps restant : {self.temps_restant} s"
+            f" | Voitures : {len(self.voitures)}"
         )
+
+    def ajouter_voitures(self):
+        """Ajoute une voiture par entrée, seulement si la place est libre."""
+        for direction in ("N", "S", "E", "O"):
+            entree_occupee = any(
+                voiture["direction"] == direction
+                and voiture["distance"] < ESPACEMENT
+                for voiture in self.voitures
+            )
+            if entree_occupee:
+                continue
+
+            couleur = random.choice(("#63b3ed", "#f6c568", "#e58c99", "#b4a1e5"))
+            # Une voiture est un petit rectangle centré sur sa position.
+            if direction in ("N", "S"):
+                largeur, hauteur = LARGEUR_VOITURE, LONGUEUR_VOITURE
+            else:
+                largeur, hauteur = LONGUEUR_VOITURE, LARGEUR_VOITURE
+            dessin = self.rectangle(
+                -largeur / 2, -hauteur / 2, largeur, hauteur, couleur
+            )
+            dessin.setZValue(2)
+            voiture = {"direction": direction, "distance": 0.0, "dessin": dessin}
+            self.voitures.append(voiture)
+            self.placer_voiture(voiture)
+
+    def placer_voiture(self, voiture):
+        """Convertit la distance parcourue en coordonnées dans la scène."""
+        distance = voiture["distance"]
+        direction = voiture["direction"]
+        if direction == "N":
+            x, y = 355, distance
+        elif direction == "S":
+            x, y = 445, TAILLE - distance
+        elif direction == "O":
+            x, y = distance, 445
+        else:
+            x, y = TAILLE - distance, 355
+        voiture["dessin"].setPos(x, y)
+
+    def carrefour_occupe(self):
+        """Indique si une voiture doit encore terminer sa traversée."""
+        return any(
+            DISTANCE_ARRET < voiture["distance"] < DISTANCE_SORTIE
+            for voiture in self.voitures
+        )
+
+    def avancer_voitures(self):
+        """Avance les files en respectant les feux et les voitures devant."""
+        for direction in ("N", "S", "E", "O"):
+            # Traiter la première voiture avant celles qui la suivent.
+            file = sorted(
+                (v for v in self.voitures if v["direction"] == direction),
+                key=lambda v: v["distance"], reverse=True,
+            )
+            couleur = PHASES[self.phase][1 if direction in ("N", "S") else 2]
+            voiture_devant = None
+            for voiture in file:
+                distance = voiture["distance"]
+                nouvelle_distance = distance + VITESSE * PAS_TEMPS
+
+                # Une voiture déjà engagée continue, même si le feu change.
+                if distance <= DISTANCE_ARRET and couleur != "vert":
+                    nouvelle_distance = min(nouvelle_distance, DISTANCE_ARRET)
+                if voiture_devant is not None:
+                    nouvelle_distance = min(
+                        nouvelle_distance, voiture_devant["distance"] - ESPACEMENT
+                    )
+
+                voiture["distance"] = max(distance, nouvelle_distance)
+                self.placer_voiture(voiture)
+                voiture_devant = voiture
+
+        # Retirer uniquement les voitures entièrement sorties de l'écran.
+        for voiture in self.voitures[:]:
+            if voiture["distance"] > TAILLE + LONGUEUR_VOITURE:
+                self.scene.removeItem(voiture["dessin"])
+                self.voitures.remove(voiture)
+        self.afficher_etat()
 
     def resizeEvent(self, evenement):
         """Garde le carrefour entier visible lors du redimensionnement."""
