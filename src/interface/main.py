@@ -1,12 +1,12 @@
-"""Première étape : dessin d'un carrefour unique avec PyQt6.
+"""Deuxième étape : cycle des feux et dessin d'un carrefour unique avec PyQt6.
 
 Lancement : python src/interface/main.py
-Les feux restent rouges dans cette étape consacrée au dessin.
+Les axes nord-sud et est-ouest passent au vert à tour de rôle.
 """
 
 import sys
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication, QGraphicsScene, QGraphicsView, QMainWindow,
@@ -16,6 +16,24 @@ from PyQt6.QtWidgets import (
 TAILLE = 800
 CENTRE = TAILLE // 2
 DEMI_ROUTE = 90
+
+
+# Chaque phase : (description, couleur nord-sud, couleur est-ouest, durée).
+# Les durées sont exprimées en secondes dans la simulation.
+PHASES = [
+    ("Nord-sud : vert", "vert", "rouge", 10),
+    ("Nord-sud : orange", "orange", "rouge", 2),
+    ("Tous les feux rouges", "rouge", "rouge", 1),
+    ("Est-ouest : vert", "rouge", "vert", 10),
+    ("Est-ouest : orange", "rouge", "orange", 2),
+    ("Tous les feux rouges", "rouge", "rouge", 1),
+]
+
+COULEURS_FEUX = {
+    "rouge": "#f05252",
+    "orange": "#ffb547",
+    "vert": "#45d483",
+}
 
 
 class FenetrePrincipale(QMainWindow):
@@ -34,9 +52,18 @@ class FenetrePrincipale(QMainWindow):
         # Chaque direction possède un feu, stocké pour les prochaines étapes.
         self.feux = {}
         self.dessiner_carrefour()
-        self.statusBar().showMessage(
-            "Étape 1 : dessin du carrefour — feux fixes au rouge"
-        )
+
+        # On démarre avec une seconde de rouge pour les quatre directions.
+        self.phase = len(PHASES) - 1
+        self.temps_restant = PHASES[self.phase][3]
+        self.appliquer_phase()
+        self.afficher_etat()
+
+        # Qt appelle avancer_cycle une fois par seconde, sans bloquer la fenêtre.
+        self.minuteur = QTimer(self)
+        self.minuteur.setTimerType(Qt.TimerType.PreciseTimer)
+        self.minuteur.timeout.connect(self.avancer_cycle)
+        self.minuteur.start(1000)
 
     def rectangle(self, x, y, largeur, hauteur, couleur):
         """Ajoute un rectangle sans contour dans la scène."""
@@ -116,6 +143,41 @@ class FenetrePrincipale(QMainWindow):
                 QPen(Qt.PenStyle.NoPen), QBrush(QColor(couleur)),
             )
         self.feux[direction] = lampes
+
+    def changer_feu(self, direction, couleur):
+        """Allume une seule lampe et éteint les deux autres."""
+        for nom, lampe in self.feux[direction].items():
+            teinte = COULEURS_FEUX[nom] if nom == couleur else "#46505c"
+            lampe.setBrush(QBrush(QColor(teinte)))
+
+    def appliquer_phase(self):
+        """Met les quatre feux dans l'état prévu par la phase actuelle."""
+        description, couleur_ns, couleur_eo, duree = PHASES[self.phase]
+
+        # Tout passer au rouge avant d'allumer les lampes du nouvel état.
+        for direction in self.feux:
+            self.changer_feu(direction, "rouge")
+        for direction in ("N", "S"):
+            self.changer_feu(direction, couleur_ns)
+        for direction in ("E", "O"):
+            self.changer_feu(direction, couleur_eo)
+
+    def avancer_cycle(self):
+        """Décompte une seconde et change de phase lorsque le délai expire."""
+        self.temps_restant -= 1
+        if self.temps_restant <= 0:
+            # Le modulo permet de revenir au début après la dernière phase.
+            self.phase = (self.phase + 1) % len(PHASES)
+            self.temps_restant = PHASES[self.phase][3]
+            self.appliquer_phase()
+        self.afficher_etat()
+
+    def afficher_etat(self):
+        """Affiche la phase et son temps restant en bas de la fenêtre."""
+        description = PHASES[self.phase][0]
+        self.statusBar().showMessage(
+            f"{description} | Temps restant : {self.temps_restant} s"
+        )
 
     def resizeEvent(self, evenement):
         """Garde le carrefour entier visible lors du redimensionnement."""
