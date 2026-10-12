@@ -1,4 +1,4 @@
-"""Sixième étape : piétons, ambulance prioritaire et trafic d'un carrefour unique avec PyQt6.
+"""Septième étape : accidents, piétons, ambulance prioritaire et trafic d'un carrefour unique avec PyQt6.
 
 Lancement : python src/interface/main.py
 Les axes nord-sud et est-ouest passent au vert à tour de rôle.
@@ -11,7 +11,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication, QGraphicsScene, QGraphicsView, QMainWindow,
-    QLabel, QSlider, QToolBar, QPushButton, QComboBox,
+    QLabel, QSlider, QToolBar, QPushButton, QComboBox, QCheckBox,
 )
 
 
@@ -65,10 +65,13 @@ class FenetrePrincipale(QMainWindow):
         self.demande_ambulance = None
         self.demande_pietons = False
         self.pietons = []
+        self.accident = None
+        self.temps_accident = 0.0
         self.densite = 45  # Intensité des arrivées, en pourcentage.
         self.dessiner_carrefour()
         self.creer_reglage_densite()
         self.creer_commande_pietons()
+        self.creer_commandes_accident()
 
         # On démarre avec une seconde de rouge pour les quatre directions.
         self.phase = len(PHASES) - 1
@@ -179,6 +182,77 @@ class FenetrePrincipale(QMainWindow):
         if not self.pietons:
             self.etat_pietons.setText("  Traversée terminée — piétons sur le trottoir")
             self.bouton_pietons.setEnabled(True)
+
+    def creer_commandes_accident(self):
+        """Ajoute les commandes et le suivi du dégagement d'une voie."""
+        self.addToolBarBreak()
+        barre = QToolBar("Accidents", self)
+        barre.setMovable(False)
+        self.addToolBar(barre)
+        self.accidents_aleatoires = QCheckBox("Accidents aléatoires")
+        self.accidents_aleatoires.setChecked(True)
+        barre.addWidget(self.accidents_aleatoires)
+        bouton = QPushButton("Provoquer un accident")
+        bouton.clicked.connect(self.provoquer_accident)
+        barre.addWidget(bouton)
+        self.bouton_degager = QPushButton("Dégager la voie")
+        self.bouton_degager.setEnabled(False)
+        self.bouton_degager.clicked.connect(self.degager_accident)
+        barre.addWidget(self.bouton_degager)
+        self.etat_accident = QLabel("  Aucun accident")
+        barre.addWidget(self.etat_accident)
+
+    def provoquer_accident(self):
+        """Immobilise une voiture hors des passages piétons et du centre."""
+        if self.accident is not None:
+            return
+        candidats = [
+            v for v in self.voitures
+            if not v["prioritaire"]
+            and (80 < v["distance"] < 200 or 580 < v["distance"] < 740)
+        ]
+        if not candidats:
+            self.etat_accident.setText("  Aucun véhicule éligible pour le moment")
+            return
+        self.accident = random.choice(candidats)
+        self.temps_accident = 20.0
+        self.accident["dessin"].setBrush(QBrush(QColor("#ed4747")))
+        self.bouton_degager.setEnabled(True)
+        self.afficher_accident()
+
+    def afficher_accident(self):
+        """Indique la voie touchée et le délai de dégagement automatique."""
+        if self.accident is None:
+            return
+        secondes = max(1, int(self.temps_accident + 0.999))
+        direction = self.accident["direction"]
+        self.etat_accident.setText(
+            f"  Voie depuis {direction} bloquée — dégagement dans {secondes} s"
+        )
+
+    def degager_accident(self):
+        """Rend au véhicule sa couleur et lui permet de repartir."""
+        if self.accident is None:
+            return
+        self.accident["dessin"].setBrush(QBrush(QColor(self.accident["couleur"])))
+        self.accident = None
+        self.temps_accident = 0.0
+        self.bouton_degager.setEnabled(False)
+        self.etat_accident.setText("  Voie dégagée")
+
+    def actualiser_accident(self):
+        """Décompte le dépannage ou tente un nouvel accident aléatoire."""
+        if self.accident is not None:
+            self.temps_accident -= PAS_TEMPS
+            if self.temps_accident <= 0:
+                self.degager_accident()
+            else:
+                self.afficher_accident()
+        elif self.accidents_aleatoires.isChecked():
+            # En moyenne une tentative toutes les 55 secondes de simulation.
+            # Elle peut échouer si aucune voiture n'est dans une zone éligible.
+            if random.random() < PAS_TEMPS / 55:
+                self.provoquer_accident()
 
     def changer_densite(self, valeur):
         """Applique le réglage aux prochaines arrivées de voitures."""
@@ -409,7 +483,8 @@ class FenetrePrincipale(QMainWindow):
             repere = self.rectangle(-5, -5, 10, 10, "#1687ee")
             repere.setParentItem(dessin)
         voiture = {"direction": direction, "distance": 0.0,
-                   "dessin": dessin, "prioritaire": prioritaire}
+                   "dessin": dessin, "prioritaire": prioritaire,
+                   "couleur": couleur}
         self.voitures.append(voiture)
         self.placer_voiture(voiture)
         return voiture
@@ -437,6 +512,7 @@ class FenetrePrincipale(QMainWindow):
 
     def avancer_voitures(self):
         """Avance les files en respectant les feux et les voitures devant."""
+        self.actualiser_accident()
         self.avancer_pietons()
         self.essayer_creer_ambulance()
         for direction in ("N", "S", "E", "O"):
@@ -450,6 +526,8 @@ class FenetrePrincipale(QMainWindow):
             for voiture in file:
                 distance = voiture["distance"]
                 vitesse = 80 if voiture["prioritaire"] else VITESSE
+                if voiture is self.accident:
+                    vitesse = 0
                 nouvelle_distance = distance + vitesse * PAS_TEMPS
 
                 # Une voiture déjà engagée continue, même si le feu change.
