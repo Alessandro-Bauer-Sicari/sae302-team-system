@@ -1,4 +1,4 @@
-"""Cinquième étape : ambulance prioritaire, trafic et feux d'un carrefour unique avec PyQt6.
+"""Sixième étape : piétons, ambulance prioritaire et trafic d'un carrefour unique avec PyQt6.
 
 Lancement : python src/interface/main.py
 Les axes nord-sud et est-ouest passent au vert à tour de rôle.
@@ -63,9 +63,12 @@ class FenetrePrincipale(QMainWindow):
         self.voitures = []
         self.ambulance = None
         self.demande_ambulance = None
+        self.demande_pietons = False
+        self.pietons = []
         self.densite = 45  # Intensité des arrivées, en pourcentage.
         self.dessiner_carrefour()
         self.creer_reglage_densite()
+        self.creer_commande_pietons()
 
         # On démarre avec une seconde de rouge pour les quatre directions.
         self.phase = len(PHASES) - 1
@@ -118,6 +121,64 @@ class FenetrePrincipale(QMainWindow):
         self.bouton_ambulance = QPushButton("Envoyer une ambulance")
         self.bouton_ambulance.clicked.connect(self.demander_ambulance)
         barre.addWidget(self.bouton_ambulance)
+
+    def creer_commande_pietons(self):
+        """Ajoute une commande de traversée et son état visible."""
+        self.addToolBarBreak()
+        barre = QToolBar("Piétons", self)
+        barre.setMovable(False)
+        self.addToolBar(barre)
+        self.bouton_pietons = QPushButton("Demander une traversée piétonne")
+        self.bouton_pietons.clicked.connect(self.demander_pietons)
+        barre.addWidget(self.bouton_pietons)
+        self.etat_pietons = QLabel("  Piétons : en attente d'une demande")
+        barre.addWidget(self.etat_pietons)
+
+    def demander_pietons(self):
+        """Mémorise une demande sans interrompre une traversée automobile."""
+        if self.demande_pietons or self.pietons:
+            return
+        self.demande_pietons = True
+        self.bouton_pietons.setEnabled(False)
+        self.etat_pietons.setText("  Demande enregistrée : attendez le vert piéton")
+
+    def commencer_traversee(self):
+        """Fait traverser un piéton par passage, uniquement lorsque tout est rouge."""
+        self.demande_pietons = False
+        for direction in ("N", "S", "E", "O"):
+            dessin = self.scene.addEllipse(
+                -5, -5, 10, 10, QPen(QColor("#ffffff"), 1),
+                QBrush(QColor("#f7a840")),
+            )
+            dessin.setZValue(3)
+            pieton = {"direction": direction, "distance": 0.0, "dessin": dessin}
+            self.pietons.append(pieton)
+            self.placer_pieton(pieton)
+        self.etat_pietons.setText("  Vert piéton : traversée en cours")
+
+    def placer_pieton(self, pieton):
+        """Place le piéton sur les bandes blanches de son passage."""
+        position = 298 + pieton["distance"]
+        direction = pieton["direction"]
+        if direction in ("N", "S"):
+            x, y = position, 286 if direction == "N" else 514
+        else:
+            x, y = 514 if direction == "E" else 286, position
+        pieton["dessin"].setPos(x, y)
+
+    def avancer_pietons(self):
+        """Traverse à 30 pixels par seconde ; les feux restent rouges jusqu'au bout."""
+        if not self.pietons:
+            return
+        for pieton in self.pietons[:]:
+            pieton["distance"] += 30 * PAS_TEMPS
+            self.placer_pieton(pieton)
+            if pieton["distance"] >= 204:
+                self.scene.removeItem(pieton["dessin"])
+                self.pietons.remove(pieton)
+        if not self.pietons:
+            self.etat_pietons.setText("  Traversée terminée — piétons sur le trottoir")
+            self.bouton_pietons.setEnabled(True)
 
     def changer_densite(self, valeur):
         """Applique le réglage aux prochaines arrivées de voitures."""
@@ -223,6 +284,10 @@ class FenetrePrincipale(QMainWindow):
 
     def avancer_cycle(self):
         """Respecte les transitions et maintient le vert pendant la priorité."""
+        # Une traversée commencée se termine, même en cas d'alerte ambulance.
+        if self.pietons:
+            self.afficher_etat()
+            return
         cible = self.phase_prioritaire()
         if cible is not None and self.phase == cible:
             # Aucun compte à rebours ne peut couper le vert à l'ambulance.
@@ -237,6 +302,11 @@ class FenetrePrincipale(QMainWindow):
         if self.temps_restant <= 0:
             if self.phase in (2, 5) and self.carrefour_occupe():
                 self.temps_restant = 0
+                self.afficher_etat()
+                return
+            if self.phase in (2, 5) and self.demande_pietons and cible is None:
+                self.temps_restant = 0
+                self.commencer_traversee()
                 self.afficher_etat()
                 return
             if self.phase in (2, 5) and cible is not None:
@@ -292,6 +362,11 @@ class FenetrePrincipale(QMainWindow):
                 temps = "Vert maintenu jusqu'à la sortie de l'ambulance"
             if self.demande_ambulance is not None:
                 description += " (attente à l'entrée)"
+        if self.pietons:
+            description = "Tous rouges : traversée des piétons"
+            temps = "Attente de la fin de traversée"
+            if cible is not None:
+                temps += " — ambulance en attente"
         self.statusBar().showMessage(
             f"{description} | {temps} | Véhicules : {len(self.voitures)}"
         )
@@ -362,6 +437,7 @@ class FenetrePrincipale(QMainWindow):
 
     def avancer_voitures(self):
         """Avance les files en respectant les feux et les voitures devant."""
+        self.avancer_pietons()
         self.essayer_creer_ambulance()
         for direction in ("N", "S", "E", "O"):
             # Traiter la première voiture avant celles qui la suivent.
