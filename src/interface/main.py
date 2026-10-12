@@ -1,4 +1,4 @@
-"""Septième étape : accidents, piétons, ambulance prioritaire et trafic d'un carrefour unique avec PyQt6.
+"""Comparaison mesurée avec/sans priorité, journal et simulation du carrefour d'un carrefour unique avec PyQt6.
 
 Lancement : python src/interface/main.py
 Les axes nord-sud et est-ouest passent au vert à tour de rôle.
@@ -6,12 +6,15 @@ Les axes nord-sud et est-ouest passent au vert à tour de rôle.
 
 import sys
 import random
+import csv
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication, QGraphicsScene, QGraphicsView, QMainWindow,
     QLabel, QSlider, QToolBar, QPushButton, QComboBox, QCheckBox,
+    QDockWidget, QPlainTextEdit, QDialog, QVBoxLayout, QTableWidget,
+    QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QProgressBar,
 )
 
 
@@ -48,8 +51,22 @@ COULEURS_FEUX = {
 class FenetrePrincipale(QMainWindow):
     """Affiche les quatre branches du carrefour."""
 
-    def __init__(self):
+    def __init__(self, densite=45, graine=None, mode_comparaison=False):
         super().__init__()
+        self.mode_comparaison = mode_comparaison
+        # Séparer les tirages d'arrivées des couleurs et des accidents.
+        self.hasard_arrivees = random.Random(graine)
+        self.temps_simule = 0.0
+        self.debut_mission = None
+        self.duree_mission = None
+        self.debut_attente_pietons = None
+        self.attente_pietons = None
+        self.priorite_mission = True
+        self.attente_voitures = 0.0
+        self.voitures_entrees = 0
+        self.voitures_sorties = 0
+        self.arrivees_refusees = 0
+        self.nombre_demandes = 0
         self.setWindowTitle("Team System — Carrefour connecté")
         self.resize(900, 900)
 
@@ -67,11 +84,12 @@ class FenetrePrincipale(QMainWindow):
         self.pietons = []
         self.accident = None
         self.temps_accident = 0.0
-        self.densite = 45  # Intensité des arrivées, en pourcentage.
+        self.densite = densite  # Intensité des arrivées, en pourcentage.
         self.dessiner_carrefour()
         self.creer_reglage_densite()
         self.creer_commande_pietons()
         self.creer_commandes_accident()
+        self.creer_outils_analyse()
 
         # On démarre avec une seconde de rouge pour les quatre directions.
         self.phase = len(PHASES) - 1
@@ -94,6 +112,11 @@ class FenetrePrincipale(QMainWindow):
         self.arrivees.timeout.connect(self.ajouter_voitures)
         self.arrivees.start(800)
         self.ajouter_voitures()
+        if self.mode_comparaison:
+            self.minuteur.stop()
+            self.animation.stop()
+            self.arrivees.stop()
+        self.journaliser("Simulation démarrée")
 
     def creer_reglage_densite(self):
         """Ajoute un curseur pour régler la fréquence des arrivées."""
@@ -142,12 +165,16 @@ class FenetrePrincipale(QMainWindow):
         if self.demande_pietons or self.pietons:
             return
         self.demande_pietons = True
+        self.debut_attente_pietons = self.temps_simule
+        self.journaliser("Demande piétonne enregistrée")
         self.bouton_pietons.setEnabled(False)
         self.etat_pietons.setText("  Demande enregistrée : attendez le vert piéton")
 
     def commencer_traversee(self):
         """Fait traverser un piéton par passage, uniquement lorsque tout est rouge."""
         self.demande_pietons = False
+        self.attente_pietons = self.temps_simule - self.debut_attente_pietons
+        self.journaliser(f"Piétons autorisés après {self.attente_pietons:.1f} s d'attente")
         for direction in ("N", "S", "E", "O"):
             dessin = self.scene.addEllipse(
                 -5, -5, 10, 10, QPen(QColor("#ffffff"), 1),
@@ -180,6 +207,7 @@ class FenetrePrincipale(QMainWindow):
                 self.scene.removeItem(pieton["dessin"])
                 self.pietons.remove(pieton)
         if not self.pietons:
+            self.journaliser("Piétons sur le trottoir : le trafic peut reprendre")
             self.etat_pietons.setText("  Traversée terminée — piétons sur le trottoir")
             self.bouton_pietons.setEnabled(True)
 
@@ -216,6 +244,7 @@ class FenetrePrincipale(QMainWindow):
             return
         self.accident = random.choice(candidats)
         self.temps_accident = 20.0
+        self.journaliser(f"Accident sur la voie depuis {self.accident['direction']}")
         self.accident["dessin"].setBrush(QBrush(QColor("#ed4747")))
         self.bouton_degager.setEnabled(True)
         self.afficher_accident()
@@ -234,6 +263,7 @@ class FenetrePrincipale(QMainWindow):
         """Rend au véhicule sa couleur et lui permet de repartir."""
         if self.accident is None:
             return
+        self.journaliser("Accident dégagé : la file peut repartir")
         self.accident["dessin"].setBrush(QBrush(QColor(self.accident["couleur"])))
         self.accident = None
         self.temps_accident = 0.0
@@ -253,6 +283,47 @@ class FenetrePrincipale(QMainWindow):
             # Elle peut échouer si aucune voiture n'est dans une zone éligible.
             if random.random() < PAS_TEMPS / 55:
                 self.provoquer_accident()
+
+    def creer_outils_analyse(self):
+        """Ajoute l'expérience comparative et un journal lisible des décisions."""
+        self.addToolBarBreak()
+        barre = QToolBar("Analyse", self)
+        barre.setMovable(False)
+        self.addToolBar(barre)
+        self.option_priorite = QCheckBox("Priorité ambulance")
+        self.option_priorite.setChecked(True)
+        self.option_priorite.setToolTip("Ce réglage s'applique à la prochaine mission.")
+        barre.addWidget(self.option_priorite)
+        bouton = QPushButton("Comparer avec / sans priorité")
+        bouton.clicked.connect(self.ouvrir_comparaison)
+        barre.addWidget(bouton)
+        self.mesure_mission = QLabel("  Aucun trajet mesuré")
+        barre.addWidget(self.mesure_mission)
+
+        dock = QDockWidget("Journal des décisions", self)
+        self.journal = QPlainTextEdit()
+        self.journal.setReadOnly(True)
+        self.journal.setMaximumBlockCount(120)
+        dock.setWidget(self.journal)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+        dock.setMinimumHeight(100)
+        self.resizeDocks([dock], [120], Qt.Orientation.Vertical)
+
+    def journaliser(self, message):
+        """Enregistre les événements avec le temps écoulé dans la simulation."""
+        if not self.mode_comparaison:
+            self.journal.appendPlainText(f"[{self.temps_simule:6.1f} s] {message}")
+
+    def ouvrir_comparaison(self):
+        """Met la démonstration en pause pendant une expérience indépendante."""
+        self.minuteur.stop()
+        self.animation.stop()
+        self.arrivees.stop()
+        dialogue = Comparaison(self, self.densite, self.choix_direction.currentData())
+        dialogue.exec()
+        self.minuteur.start()
+        self.animation.start()
+        self.arrivees.start()
 
     def changer_densite(self, valeur):
         """Applique le réglage aux prochaines arrivées de voitures."""
@@ -304,8 +375,8 @@ class FenetrePrincipale(QMainWindow):
         self.dessiner_feu("O", 215, 500)
         self.dessiner_feu("E", 558, 237)
 
-        self.texte("NORD", 416, 25)
-        self.texte("SUD", 326, 737)
+        self.texte("NORD", 416, 25, couleur="#ffffff")
+        self.texte("SUD", 326, 737, couleur="#ffffff")
         self.texte("OUEST", 25, 352, couleur="#ffffff")
         self.texte("EST", 715, 412, couleur="#ffffff")
         self.texte("TEAM SYSTEM", 30, 25, 20)
@@ -347,6 +418,7 @@ class FenetrePrincipale(QMainWindow):
     def appliquer_phase(self):
         """Met les quatre feux dans l'état prévu par la phase actuelle."""
         description, couleur_ns, couleur_eo, duree = PHASES[self.phase]
+        self.journaliser(description)
 
         # Tout passer au rouge avant d'allumer les lampes du nouvel état.
         for direction in self.feux:
@@ -393,6 +465,8 @@ class FenetrePrincipale(QMainWindow):
 
     def phase_prioritaire(self):
         """Renvoie le vert demandé (0 ou 3), ou None sans priorité."""
+        if not self.priorite_mission:
+            return None
         direction = self.demande_ambulance
         if self.ambulance is not None:
             if self.ambulance["distance"] >= DISTANCE_SORTIE:
@@ -407,6 +481,12 @@ class FenetrePrincipale(QMainWindow):
         if self.ambulance is not None or self.demande_ambulance is not None:
             return
         self.demande_ambulance = self.choix_direction.currentData()
+        self.priorite_mission = self.option_priorite.isChecked()
+        self.debut_mission = self.temps_simule
+        self.duree_mission = None
+        mode = "avec priorité" if self.priorite_mission else "sans priorité"
+        self.journaliser(f"Ambulance demandée depuis {self.demande_ambulance}, {mode}")
+        self.mesure_mission.setText("  Mission en cours…")
         self.bouton_ambulance.setEnabled(False)
         # L'alerte est envoyée dès la demande, même si la file est longue.
         self.essayer_creer_ambulance()
@@ -453,10 +533,13 @@ class FenetrePrincipale(QMainWindow):
         Ce réglage représente la demande, pas le taux d'occupation mesuré.
         """
         for direction in ("N", "S", "E", "O"):
-            # Réserver cette entrée à l'ambulance en attente.
-            if direction == self.demande_ambulance:
+            # Un tirage par direction à chaque appel, même si l'entrée est bloquée.
+            # Cela conserve la même demande dans les deux expériences.
+            if self.hasard_arrivees.randrange(100) >= self.densite:
                 continue
-            if random.randrange(100) >= self.densite:
+            self.nombre_demandes += 1
+            if direction == self.demande_ambulance:
+                self.arrivees_refusees += 1
                 continue
             entree_occupee = any(
                 voiture["direction"] == direction
@@ -464,6 +547,7 @@ class FenetrePrincipale(QMainWindow):
                 for voiture in self.voitures
             )
             if entree_occupee:
+                self.arrivees_refusees += 1
                 continue
 
             couleur = random.choice(("#63b3ed", "#f6c568", "#e58c99", "#b4a1e5"))
@@ -486,6 +570,8 @@ class FenetrePrincipale(QMainWindow):
                    "dessin": dessin, "prioritaire": prioritaire,
                    "couleur": couleur}
         self.voitures.append(voiture)
+        if not prioritaire:
+            self.voitures_entrees += 1
         self.placer_voiture(voiture)
         return voiture
 
@@ -512,6 +598,7 @@ class FenetrePrincipale(QMainWindow):
 
     def avancer_voitures(self):
         """Avance les files en respectant les feux et les voitures devant."""
+        self.temps_simule += PAS_TEMPS
         self.actualiser_accident()
         self.avancer_pietons()
         self.essayer_creer_ambulance()
@@ -540,10 +627,16 @@ class FenetrePrincipale(QMainWindow):
 
                 voiture["distance"] = max(distance, nouvelle_distance)
                 self.placer_voiture(voiture)
+                if not voiture["prioritaire"] and voiture["distance"] - distance < 0.000001:
+                    self.attente_voitures += PAS_TEMPS
                 if (voiture["prioritaire"]
                         and distance < DISTANCE_SORTIE <= voiture["distance"]):
-                    # Retour au cycle normal après la sortie complète.
-                    self.temps_restant = min(self.temps_restant, 3)
+                    self.duree_mission = self.temps_simule - self.debut_mission
+                    self.journaliser(f"Ambulance sortie après {self.duree_mission:.1f} s")
+                    self.mesure_mission.setText(f"  Dernière mission : {self.duree_mission:.1f} s")
+                    # Sans priorité, le cycle normal ne doit pas être modifié.
+                    if self.priorite_mission:
+                        self.temps_restant = min(self.temps_restant, 3)
                 voiture_devant = voiture
 
         # Retirer uniquement les voitures entièrement sorties de l'écran.
@@ -551,6 +644,8 @@ class FenetrePrincipale(QMainWindow):
             if voiture["distance"] > TAILLE + LONGUEUR_VOITURE:
                 self.scene.removeItem(voiture["dessin"])
                 self.voitures.remove(voiture)
+                if not voiture["prioritaire"]:
+                    self.voitures_sorties += 1
                 if voiture is self.ambulance:
                     self.ambulance = None
                     self.bouton_ambulance.setEnabled(True)
@@ -563,6 +658,195 @@ class FenetrePrincipale(QMainWindow):
             self.vue.fitInView(
                 self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio
             )
+
+
+class Comparaison(QDialog):
+    """Rejoue deux fois un scénario reproductible avec le moteur de la maquette.
+
+    Seule l'option de priorité change. Les tentatives d'arrivée sont identiques,
+    mais leur admission peut varier selon les files ; on expose cette différence.
+    QTimer fait avancer le calcul par petits lots pour garder la fenêtre réactive.
+    """
+
+    def __init__(self, parent, densite, direction):
+        super().__init__(parent)
+        self.setWindowTitle("Expérience — avec et sans priorité")
+        self.resize(820, 610)
+        self.densite = densite
+        self.direction = direction
+        self.graine = 2026
+        self.tour = 0
+        self.nombre_tours = 3000  # 120 secondes de simulation à 40 ms.
+        self.resultats = []
+        self.lignes = []
+        disposition = QVBoxLayout(self)
+        titre = QLabel("La priorité fait-elle gagner du temps ?")
+        titre.setStyleSheet("font-size: 22px; font-weight: bold; color: #176691")
+        disposition.addWidget(titre)
+        contexte = QLabel(
+            f"Scénario : 120 s • Densité {densite} % • Ambulance depuis {direction}\n"
+            "Ambulance demandée à 12 s • Piétons demandés à 24 s\n"
+            "Même demande de trafic (graine 2026). Accidents désactivés dans ce test."
+        )
+        contexte.setWordWrap(True)
+        disposition.addWidget(contexte)
+        self.progression = QProgressBar()
+        self.progression.setRange(0, self.nombre_tours)
+        disposition.addWidget(self.progression)
+        self.conclusion = QLabel("Calcul des deux simulations…")
+        self.conclusion.setWordWrap(True)
+        disposition.addWidget(self.conclusion)
+        self.tableau = QTableWidget(0, 4)
+        self.tableau.setHorizontalHeaderLabels(("Mesure", "Sans priorité", "Avec priorité", "Avec − sans"))
+        self.tableau.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.tableau.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        disposition.addWidget(self.tableau)
+        note = QLabel(
+            "L'attente automobile est le temps complètement arrêté, cumulé sur 120 s. "
+            "Sa moyenne inclut toutes les voitures entrées, même encore présentes à la fin. "
+            "Les arrivées refusées ne sont pas mises en file hors écran. "
+            "Ces résultats décrivent ce scénario, pas une garantie pour un carrefour réel."
+        )
+        note.setWordWrap(True)
+        disposition.addWidget(note)
+        self.export = QPushButton("Exporter le bilan CSV")
+        self.export.setEnabled(False)
+        self.export.clicked.connect(self.exporter)
+        disposition.addWidget(self.export)
+        fermer = QPushButton("Fermer et reprendre la simulation")
+        fermer.clicked.connect(self.reject)
+        disposition.addWidget(fermer)
+
+        self.simulations = []
+        for priorite in (False, True):
+            simulation = FenetrePrincipale(densite, self.graine, mode_comparaison=True)
+            simulation.option_priorite.setChecked(priorite)
+            simulation.accidents_aleatoires.setChecked(False)
+            simulation.choix_direction.setCurrentIndex(
+                simulation.choix_direction.findData(direction)
+            )
+            self.simulations.append(simulation)
+        self.calcul = QTimer(self)
+        self.calcul.timeout.connect(self.calculer_lot)
+        self.calcul.start(1)
+
+    def calculer_lot(self):
+        """Avance les deux expériences d'une seconde simulée à chaque lot."""
+        for _ in range(25):
+            if self.tour >= self.nombre_tours:
+                self.calcul.stop()
+                self.terminer()
+                return
+            for simulation in self.simulations:
+                if self.tour == 300:  # 12 secondes.
+                    simulation.demander_ambulance()
+                if self.tour == 600:  # 24 secondes.
+                    simulation.demander_pietons()
+                if self.tour > 0 and self.tour % 20 == 0:
+                    simulation.ajouter_voitures()
+                if self.tour > 0 and self.tour % 25 == 0:
+                    simulation.avancer_cycle()
+                simulation.avancer_voitures()
+            self.tour += 1
+        self.progression.setValue(self.tour)
+
+    def terminer(self):
+        """Calcule les résultats sans imposer qu'une priorité soit bénéfique."""
+        for simulation in self.simulations:
+            self.resultats.append({
+                "mission": simulation.duree_mission,
+                "attente": simulation.attente_voitures,
+                "moyenne": simulation.attente_voitures / max(1, simulation.voitures_entrees),
+                "pietons": simulation.attente_pietons,
+                "demandes": simulation.nombre_demandes,
+                "entrees": simulation.voitures_entrees,
+                "sorties": simulation.voitures_sorties,
+                "refusees": simulation.arrivees_refusees,
+            })
+        sans, avec = self.resultats
+        mesures = (
+            ("Ambulance : demande → sortie", "mission", "s"),
+            ("Attente cumulée des voitures", "attente", "s"),
+            ("Attente moyenne par voiture entrée", "moyenne", "s"),
+            ("Piétons : demande → début", "pietons", "s"),
+            ("Demandes d'arrivée de voitures", "demandes", ""),
+            ("Voitures entrées", "entrees", ""),
+            ("Voitures sorties de l'écran", "sorties", ""),
+            ("Arrivées refusées (entrée occupée)", "refusees", ""),
+        )
+        self.tableau.setRowCount(len(mesures))
+        for ligne, (nom, cle, unite) in enumerate(mesures):
+            a, b = sans[cle], avec[cle]
+            difference = None if a is None or b is None else b - a
+            self.lignes.append((nom, a, b, difference, unite))
+            valeurs = [nom]
+            for valeur in (a, b, difference):
+                if valeur is None:
+                    valeurs.append("Non terminé")
+                elif unite:
+                    valeurs.append(f"{valeur:.2f} {unite}")
+                else:
+                    valeurs.append(str(int(valeur)))
+            for colonne, texte in enumerate(valeurs):
+                self.tableau.setItem(ligne, colonne, QTableWidgetItem(texte))
+        if sans["mission"] is None or avec["mission"] is None:
+            bilan = "Au moins une mission n'est pas terminée en 120 s : gain non calculable."
+        else:
+            gain = sans["mission"] - avec["mission"]
+            pourcentage = 100 * gain / sans["mission"]
+            if gain > 0.01:
+                bilan = f"Ambulance : {gain:.2f} s gagnées ({pourcentage:.1f} %) avec la priorité."
+            elif gain < -0.01:
+                bilan = f"Dans ce scénario, la priorité prend {-gain:.2f} s de plus."
+            else:
+                bilan = "Dans ce scénario, la priorité ne change pas le temps de l'ambulance."
+        self.conclusion.setText(bilan)
+        self.export.setEnabled(True)
+        self.progression.setValue(self.nombre_tours)
+        self.liberer_simulations()
+
+    def enregistrer_csv(self, chemin):
+        """Écrit les paramètres et les mesures, sans dépendance supplémentaire."""
+        with open(chemin, "w", encoding="utf-8-sig", newline="") as fichier:
+            writer = csv.writer(fichier, delimiter=";")
+            writer.writerow(("Paramètre", "Valeur"))
+            for ligne in (("Densité (%)", self.densite), ("Direction", self.direction),
+                          ("Graine", self.graine), ("Durée (s)", 120),
+                          ("Demande ambulance (s)", 12), ("Demande piétons (s)", 24),
+                          ("Accidents", "Désactivés"),
+                          ("Attente voitures", "Temps arrêté des véhicules admis, sur 120 s"),
+                          ("Arrivées refusées", "Non mises en file hors écran")):
+                writer.writerow(ligne)
+            writer.writerow(())
+            writer.writerow(("Mesure", "Sans priorité", "Avec priorité", "Avec moins sans", "Unité"))
+            for ligne in self.lignes:
+                writer.writerow(["Non terminé" if v is None else round(v, 3)
+                                 if isinstance(v, float) else v for v in ligne])
+
+    def exporter(self):
+        """Laisse choisir où sauvegarder le bilan pour le rapport du projet."""
+        chemin, _ = QFileDialog.getSaveFileName(self, "Exporter le bilan", "comparaison.csv", "CSV (*.csv)")
+        if not chemin:
+            return
+        try:
+            self.enregistrer_csv(chemin)
+        except OSError as erreur:
+            QMessageBox.warning(self, "Export impossible", str(erreur))
+        else:
+            QMessageBox.information(self, "Export terminé", "Le bilan a été enregistré.")
+
+    def liberer_simulations(self):
+        """Ferme les deux fenêtres de calcul non affichées."""
+        for simulation in self.simulations:
+            simulation.close()
+            simulation.deleteLater()
+        self.simulations.clear()
+
+    def done(self, resultat):
+        """Interrompt aussi le calcul si l'utilisateur ferme avant la fin."""
+        self.calcul.stop()
+        self.liberer_simulations()
+        super().done(resultat)
 
 
 if __name__ == "__main__":
