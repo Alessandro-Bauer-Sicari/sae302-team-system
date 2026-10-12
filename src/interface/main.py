@@ -1,4 +1,4 @@
-"""Troisième étape : voitures et feux d'un carrefour unique avec PyQt6.
+"""Quatrième étape : densité réglable, voitures et feux d'un carrefour unique avec PyQt6.
 
 Lancement : python src/interface/main.py
 Les axes nord-sud et est-ouest passent au vert à tour de rôle.
@@ -11,6 +11,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication, QGraphicsScene, QGraphicsView, QMainWindow,
+    QLabel, QSlider, QToolBar,
 )
 
 
@@ -60,7 +61,9 @@ class FenetrePrincipale(QMainWindow):
         # Chaque direction possède un feu, stocké pour les prochaines étapes.
         self.feux = {}
         self.voitures = []
+        self.densite = 45  # Intensité des arrivées, en pourcentage.
         self.dessiner_carrefour()
+        self.creer_reglage_densite()
 
         # On démarre avec une seconde de rouge pour les quatre directions.
         self.phase = len(PHASES) - 1
@@ -81,8 +84,34 @@ class FenetrePrincipale(QMainWindow):
 
         self.arrivees = QTimer(self)
         self.arrivees.timeout.connect(self.ajouter_voitures)
-        self.arrivees.start(1800)
+        self.arrivees.start(800)
         self.ajouter_voitures()
+
+    def creer_reglage_densite(self):
+        """Ajoute un curseur pour régler la fréquence des arrivées."""
+        barre = QToolBar("Circulation", self)
+        barre.setMovable(False)
+        self.addToolBar(barre)
+
+        self.etiquette_densite = QLabel(f" Densité : {self.densite} %  ")
+        barre.addWidget(self.etiquette_densite)
+
+        self.curseur_densite = QSlider(Qt.Orientation.Horizontal)
+        self.curseur_densite.setRange(0, 100)
+        self.curseur_densite.setValue(self.densite)
+        self.curseur_densite.setFixedWidth(240)
+        self.curseur_densite.setAccessibleName("Densité de circulation")
+        self.curseur_densite.setToolTip(
+            "0 % : aucune arrivée ; 100 % : demande maximale. "
+            "Les voitures déjà présentes continuent leur trajet."
+        )
+        self.curseur_densite.valueChanged.connect(self.changer_densite)
+        barre.addWidget(self.curseur_densite)
+
+    def changer_densite(self, valeur):
+        """Applique le réglage aux prochaines arrivées de voitures."""
+        self.densite = valeur
+        self.etiquette_densite.setText(f" Densité : {valeur} %  ")
 
     def rectangle(self, x, y, largeur, hauteur, couleur):
         """Ajoute un rectangle sans contour dans la scène."""
@@ -207,8 +236,15 @@ class FenetrePrincipale(QMainWindow):
         )
 
     def ajouter_voitures(self):
-        """Ajoute une voiture par entrée, seulement si la place est libre."""
+        """Tente une arrivée par entrée selon la densité et la place libre.
+
+        Toutes les 800 ms, un tirage de 0 à 99 est comparé à la densité.
+        À 0 %, aucune arrivée ; à 100 %, chaque entrée libre est alimentée.
+        Ce réglage représente la demande, pas le taux d'occupation mesuré.
+        """
         for direction in ("N", "S", "E", "O"):
+            if random.randrange(100) >= self.densite:
+                continue
             entree_occupee = any(
                 voiture["direction"] == direction
                 and voiture["distance"] < ESPACEMENT
