@@ -1,4 +1,4 @@
-"""Quatrième étape : densité réglable, voitures et feux d'un carrefour unique avec PyQt6.
+"""Cinquième étape : ambulance prioritaire, trafic et feux d'un carrefour unique avec PyQt6.
 
 Lancement : python src/interface/main.py
 Les axes nord-sud et est-ouest passent au vert à tour de rôle.
@@ -11,7 +11,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication, QGraphicsScene, QGraphicsView, QMainWindow,
-    QLabel, QSlider, QToolBar,
+    QLabel, QSlider, QToolBar, QPushButton, QComboBox,
 )
 
 
@@ -61,6 +61,8 @@ class FenetrePrincipale(QMainWindow):
         # Chaque direction possède un feu, stocké pour les prochaines étapes.
         self.feux = {}
         self.voitures = []
+        self.ambulance = None
+        self.demande_ambulance = None
         self.densite = 45  # Intensité des arrivées, en pourcentage.
         self.dessiner_carrefour()
         self.creer_reglage_densite()
@@ -107,6 +109,15 @@ class FenetrePrincipale(QMainWindow):
         )
         self.curseur_densite.valueChanged.connect(self.changer_densite)
         barre.addWidget(self.curseur_densite)
+        barre.addSeparator()
+        self.choix_direction = QComboBox()
+        for nom, direction in (("Nord", "N"), ("Sud", "S"),
+                               ("Est", "E"), ("Ouest", "O")):
+            self.choix_direction.addItem(nom, direction)
+        barre.addWidget(self.choix_direction)
+        self.bouton_ambulance = QPushButton("Envoyer une ambulance")
+        self.bouton_ambulance.clicked.connect(self.demander_ambulance)
+        barre.addWidget(self.bouton_ambulance)
 
     def changer_densite(self, valeur):
         """Applique le réglage aux prochaines arrivées de voitures."""
@@ -211,28 +222,78 @@ class FenetrePrincipale(QMainWindow):
             self.changer_feu(direction, couleur_eo)
 
     def avancer_cycle(self):
-        """Décompte une seconde et change de phase lorsque le délai expire."""
+        """Respecte les transitions et maintient le vert pendant la priorité."""
+        cible = self.phase_prioritaire()
+        if cible is not None and self.phase == cible:
+            # Aucun compte à rebours ne peut couper le vert à l'ambulance.
+            self.temps_restant = PHASES[self.phase][3]
+            self.afficher_etat()
+            return
+        if cible is not None and self.phase in (0, 3):
+            # Abréger le vert opposé, puis respecter l'orange et le tout rouge.
+            self.temps_restant = min(self.temps_restant, 3)
+
         self.temps_restant -= 1
         if self.temps_restant <= 0:
-            # Ne pas libérer l'autre axe si une voiture traverse encore.
             if self.phase in (2, 5) and self.carrefour_occupe():
                 self.temps_restant = 0
                 self.afficher_etat()
                 return
-            # Le modulo permet de revenir au début après la dernière phase.
-            self.phase = (self.phase + 1) % len(PHASES)
+            if self.phase in (2, 5) and cible is not None:
+                self.phase = cible
+            else:
+                self.phase = (self.phase + 1) % len(PHASES)
             self.temps_restant = PHASES[self.phase][3]
             self.appliquer_phase()
         self.afficher_etat()
+
+    def phase_prioritaire(self):
+        """Renvoie le vert demandé (0 ou 3), ou None sans priorité."""
+        direction = self.demande_ambulance
+        if self.ambulance is not None:
+            if self.ambulance["distance"] >= DISTANCE_SORTIE:
+                return None
+            direction = self.ambulance["direction"]
+        if direction is None:
+            return None
+        return 0 if direction in ("N", "S") else 3
+
+    def demander_ambulance(self):
+        """Réserve une mission ; l'ambulance attend si l'entrée est occupée."""
+        if self.ambulance is not None or self.demande_ambulance is not None:
+            return
+        self.demande_ambulance = self.choix_direction.currentData()
+        self.bouton_ambulance.setEnabled(False)
+        # L'alerte est envoyée dès la demande, même si la file est longue.
+        self.essayer_creer_ambulance()
+        self.afficher_etat()
+
+    def essayer_creer_ambulance(self):
+        """Fait entrer l'ambulance sans la superposer à une voiture."""
+        direction = self.demande_ambulance
+        if direction is None:
+            return
+        if any(v["direction"] == direction and v["distance"] < ESPACEMENT
+               for v in self.voitures):
+            return
+        self.ambulance = self.creer_voiture(direction, "#ffffff", True)
+        self.demande_ambulance = None
 
     def afficher_etat(self):
         """Affiche la phase et son temps restant en bas de la fenêtre."""
         description = PHASES[self.phase][0]
         if self.phase in (2, 5) and self.temps_restant == 0:
             description = "Tous rouges : attente de la fin des traversées"
+        cible = self.phase_prioritaire()
+        temps = f"Temps restant : {self.temps_restant} s"
+        if cible is not None:
+            description += " | Priorité ambulance"
+            if self.phase == cible:
+                temps = "Vert maintenu jusqu'à la sortie de l'ambulance"
+            if self.demande_ambulance is not None:
+                description += " (attente à l'entrée)"
         self.statusBar().showMessage(
-            f"{description} | Temps restant : {self.temps_restant} s"
-            f" | Voitures : {len(self.voitures)}"
+            f"{description} | {temps} | Véhicules : {len(self.voitures)}"
         )
 
     def ajouter_voitures(self):
@@ -243,6 +304,9 @@ class FenetrePrincipale(QMainWindow):
         Ce réglage représente la demande, pas le taux d'occupation mesuré.
         """
         for direction in ("N", "S", "E", "O"):
+            # Réserver cette entrée à l'ambulance en attente.
+            if direction == self.demande_ambulance:
+                continue
             if random.randrange(100) >= self.densite:
                 continue
             entree_occupee = any(
@@ -254,18 +318,26 @@ class FenetrePrincipale(QMainWindow):
                 continue
 
             couleur = random.choice(("#63b3ed", "#f6c568", "#e58c99", "#b4a1e5"))
-            # Une voiture est un petit rectangle centré sur sa position.
-            if direction in ("N", "S"):
-                largeur, hauteur = LARGEUR_VOITURE, LONGUEUR_VOITURE
-            else:
-                largeur, hauteur = LONGUEUR_VOITURE, LARGEUR_VOITURE
-            dessin = self.rectangle(
-                -largeur / 2, -hauteur / 2, largeur, hauteur, couleur
-            )
-            dessin.setZValue(2)
-            voiture = {"direction": direction, "distance": 0.0, "dessin": dessin}
-            self.voitures.append(voiture)
-            self.placer_voiture(voiture)
+            self.creer_voiture(direction, couleur)
+
+    def creer_voiture(self, direction, couleur, prioritaire=False):
+        """Crée un véhicule ; le même déplacement sert aussi à l'ambulance."""
+        if direction in ("N", "S"):
+            largeur, hauteur = LARGEUR_VOITURE, LONGUEUR_VOITURE
+        else:
+            largeur, hauteur = LONGUEUR_VOITURE, LARGEUR_VOITURE
+        dessin = self.rectangle(-largeur / 2, -hauteur / 2,
+                                largeur, hauteur, couleur)
+        dessin.setZValue(2)
+        if prioritaire:
+            # Le repère bleu est enfant du véhicule et suit ses déplacements.
+            repere = self.rectangle(-5, -5, 10, 10, "#1687ee")
+            repere.setParentItem(dessin)
+        voiture = {"direction": direction, "distance": 0.0,
+                   "dessin": dessin, "prioritaire": prioritaire}
+        self.voitures.append(voiture)
+        self.placer_voiture(voiture)
+        return voiture
 
     def placer_voiture(self, voiture):
         """Convertit la distance parcourue en coordonnées dans la scène."""
@@ -290,6 +362,7 @@ class FenetrePrincipale(QMainWindow):
 
     def avancer_voitures(self):
         """Avance les files en respectant les feux et les voitures devant."""
+        self.essayer_creer_ambulance()
         for direction in ("N", "S", "E", "O"):
             # Traiter la première voiture avant celles qui la suivent.
             file = sorted(
@@ -300,7 +373,8 @@ class FenetrePrincipale(QMainWindow):
             voiture_devant = None
             for voiture in file:
                 distance = voiture["distance"]
-                nouvelle_distance = distance + VITESSE * PAS_TEMPS
+                vitesse = 80 if voiture["prioritaire"] else VITESSE
+                nouvelle_distance = distance + vitesse * PAS_TEMPS
 
                 # Une voiture déjà engagée continue, même si le feu change.
                 if distance <= DISTANCE_ARRET and couleur != "vert":
@@ -312,6 +386,10 @@ class FenetrePrincipale(QMainWindow):
 
                 voiture["distance"] = max(distance, nouvelle_distance)
                 self.placer_voiture(voiture)
+                if (voiture["prioritaire"]
+                        and distance < DISTANCE_SORTIE <= voiture["distance"]):
+                    # Retour au cycle normal après la sortie complète.
+                    self.temps_restant = min(self.temps_restant, 3)
                 voiture_devant = voiture
 
         # Retirer uniquement les voitures entièrement sorties de l'écran.
@@ -319,6 +397,9 @@ class FenetrePrincipale(QMainWindow):
             if voiture["distance"] > TAILLE + LONGUEUR_VOITURE:
                 self.scene.removeItem(voiture["dessin"])
                 self.voitures.remove(voiture)
+                if voiture is self.ambulance:
+                    self.ambulance = None
+                    self.bouton_ambulance.setEnabled(True)
         self.afficher_etat()
 
     def resizeEvent(self, evenement):
