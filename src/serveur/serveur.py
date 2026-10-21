@@ -1,4 +1,4 @@
-"""Première étape du serveur : connexions et identification des trois clients.
+"""Serveur TCP : connexions et réception des détections du capteur.
 
 Depuis la racine du projet : python -m src.serveur.serveur
 Pour accepter des clients du réseau local : ajouter --hote 0.0.0.0
@@ -6,7 +6,8 @@ Arrêt : Ctrl+C. Bibliothèque standard uniquement.
 
 Premier message : {"type": "bonjour", "role": "regulateur"}
 Rôles possibles : regulateur, capteur, feux (une connexion par rôle).
-Messages suivants : ping, etat, quitter.
+Messages communs : ping, etat, quitter.
+Capteur uniquement : detection_ambulance et sortie_ambulance, avec direction N/S/E/O.
 
 Cette étape ne pilote pas encore les feux de la maquette.
 Les rôles identifient les clients ; ce n'est pas une authentification.
@@ -43,6 +44,9 @@ class Serveur:
         self.connexions = set()  # Inclut les clients pas encore identifiés.
         self.threads = set()
         self.ecoute = None
+        self.direction_ambulance = None
+        self.detection_valide = False
+        self.revision_detection = 0
 
     def demarrer(self):
         """Écoute les connexions jusqu'à Ctrl+C ou à un appel à arreter()."""
@@ -120,6 +124,8 @@ class Serveur:
                     canal.envoyer({"type": "pong"})
                 elif message["type"] == "etat":
                     canal.envoyer(self.obtenir_etat())
+                elif message["type"] in ("detection_ambulance", "sortie_ambulance"):
+                    canal.envoyer(self.traiter_detection(role, message))
                 elif message["type"] == "quitter":
                     break
                 else:
@@ -134,6 +140,9 @@ class Serveur:
             with self.verrou:
                 if role is not None and self.clients.get(role) is canal:
                     del self.clients[role]
+                    if role == "capteur":
+                        # Une perte du capteur ne prouve pas que l'ambulance est sortie.
+                        self.detection_valide = False
                 self.connexions.discard(canal)
                 self.threads.discard(threading.current_thread())
             canal.fermer()
@@ -144,11 +153,44 @@ class Serveur:
         """Renvoie une copie de la liste des rôles connectés."""
         with self.verrou:
             connectes = sorted(self.clients)
+            detection = {
+                "direction": self.direction_ambulance,
+                "valide": self.detection_valide,
+                "revision": self.revision_detection,
+            }
         return {
             "type": "etat",
             "clients": connectes,
             "nombre_clients": len(connectes),
             "simulation_connectee": False,
+            "detection": detection,
+        }
+
+    def traiter_detection(self, role, message):
+        """Valide un signal du capteur et conserve la direction de l'ambulance."""
+        if role != "capteur":
+            return {"type": "erreur", "message": "Seul le capteur peut signaler une détection."}
+        direction = message.get("direction")
+        if direction not in ("N", "S", "E", "O"):
+            return {"type": "erreur", "message": "Direction attendue : N, S, E ou O."}
+        arrivee = message["type"] == "detection_ambulance"
+        with self.verrou:
+            if arrivee:
+                if self.direction_ambulance not in (None, direction):
+                    return {"type": "erreur", "message": "Une autre ambulance est déjà signalée."}
+                self.direction_ambulance = direction
+            else:
+                if self.direction_ambulance != direction:
+                    return {"type": "erreur", "message": "Aucune ambulance signalée dans cette direction."}
+                self.direction_ambulance = None
+            self.detection_valide = True
+            self.revision_detection += 1
+            revision = self.revision_detection
+        evenement = "arrivée" if arrivee else "sortie"
+        print(f"Capteur : {evenement} ambulance depuis {direction}", flush=True)
+        return {
+            "type": "accuse_detection", "evenement": evenement,
+            "direction": direction, "revision": revision,
         }
 
     def arreter(self):
