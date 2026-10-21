@@ -14,7 +14,7 @@ from PyQt6.QtGui import (
     QPainter,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QGraphicsScene, QGraphicsView, QMainWindow, QLabel, QSlider, QToolBar, QPushButton, QComboBox, QCheckBox, QDockWidget, QPlainTextEdit,
+    QApplication, QGraphicsScene, QGraphicsView, QMainWindow, QLabel, QSlider, QToolBar, QPushButton, QComboBox, QCheckBox, QDockWidget, QPlainTextEdit, QLineEdit, QSpinBox,
 )
 if __package__:
     from .parametres import (PAS_TEMPS, PHASES, TAILLE)
@@ -26,10 +26,14 @@ if __package__:
     from .dessin import DessinCarrefour
     from .simulation import SimulationCarrefour
     from .comparaison import Comparaison
+    from ..clients.client_qt import ClientReseauQt
 else:
     from dessin import DessinCarrefour
     from simulation import SimulationCarrefour
     from comparaison import Comparaison
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from src.clients.client_qt import ClientReseauQt
 
 
 class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
@@ -38,6 +42,10 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
     def __init__(self, densite=45, graine=None, mode_comparaison=False):
         super().__init__()
         self.mode_comparaison = mode_comparaison
+        self.client_reseau = None
+        self.fermeture_demandee = False
+        self.derniere_erreur_reseau = None
+        self.derniers_roles = None
         # Séparer les tirages d'arrivées des couleurs et des accidents.
         self.hasard_arrivees = random.Random(graine)
         self.temps_simule = 0.0
@@ -74,6 +82,8 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         self.creer_commande_pietons()
         self.creer_commandes_accident()
         self.creer_outils_analyse()
+        if not self.mode_comparaison:
+            self.creer_commandes_reseau()
 
         # On démarre avec une seconde de rouge pour les quatre directions.
         self.phase = len(PHASES) - 1
@@ -213,6 +223,104 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         self.minuteur.start()
         self.animation.start()
         self.arrivees.start()
+
+    def creer_commandes_reseau(self):
+        """Ajoute l'adresse du serveur et les commandes de connexion."""
+        self.addToolBarBreak()
+        barre = QToolBar("Réseau", self)
+        barre.setMovable(False)
+        self.addToolBar(barre)
+        barre.addWidget(QLabel(" Serveur : "))
+        self.adresse_serveur = QLineEdit("127.0.0.1")
+        self.adresse_serveur.setMaximumWidth(160)
+        self.adresse_serveur.setToolTip("Sur une autre machine, saisir l'adresse IP de la VM serveur.")
+        barre.addWidget(self.adresse_serveur)
+        self.port_serveur = QSpinBox()
+        self.port_serveur.setRange(1, 65535)
+        self.port_serveur.setValue(5000)
+        barre.addWidget(self.port_serveur)
+        self.bouton_connexion = QPushButton("Connecter")
+        self.bouton_connexion.clicked.connect(self.basculer_connexion)
+        barre.addWidget(self.bouton_connexion)
+        self.etat_reseau = QLabel("  Hors ligne — simulation locale")
+        barre.addWidget(self.etat_reseau)
+
+    def basculer_connexion(self):
+        """Démarre ou arrête le thread réseau sans attendre dans l'interface."""
+        if self.client_reseau is not None:
+            self.client_reseau.arreter()
+            self.bouton_connexion.setEnabled(False)
+            self.etat_reseau.setText("  Déconnexion en cours…")
+            return
+        hote = self.adresse_serveur.text().strip()
+        if not hote:
+            self.etat_reseau.setText("  Saisis l'adresse du serveur.")
+            return
+        self.derniere_erreur_reseau = None
+        self.derniers_roles = None
+        self.adresse_serveur.setEnabled(False)
+        self.port_serveur.setEnabled(False)
+        self.bouton_connexion.setText("Annuler")
+        self.etat_reseau.setText("  Connexion en cours…")
+        self.client_reseau = ClientReseauQt(hote, self.port_serveur.value(), self)
+        self.client_reseau.connecte.connect(self.connexion_etablie)
+        self.client_reseau.etat_recu.connect(self.recevoir_etat_reseau)
+        self.client_reseau.erreur.connect(self.signaler_erreur_reseau)
+        self.client_reseau.finished.connect(self.connexion_terminee)
+        self.client_reseau.start()
+
+    def connexion_etablie(self):
+        """Confirme l'identification du régulateur auprès du serveur."""
+        if self.client_reseau.arret.is_set():
+            return
+        self.bouton_connexion.setText("Déconnecter")
+        self.etat_reseau.setText("  Connecté — lecture de l'état…")
+        self.journaliser("Connexion TCP établie avec le rôle régulateur")
+
+    def recevoir_etat_reseau(self, etat):
+        """Affiche les clients présents ; la simulation reste locale à cette étape."""
+        if self.client_reseau.arret.is_set():
+            return
+        roles = ", ".join(etat["clients"])
+        self.etat_reseau.setText(f"  Connectés : {roles} — simulation locale")
+        if roles != self.derniers_roles:
+            self.derniers_roles = roles
+            self.journaliser(f"Clients présents sur le serveur : {roles}")
+
+    def signaler_erreur_reseau(self, message):
+        """Conserve l'erreur à l'écran et dans le journal."""
+        self.derniere_erreur_reseau = message
+        self.journaliser(f"Erreur réseau : {message}")
+
+    def connexion_terminee(self):
+        """Libère le thread une fois arrêté et réactive les commandes."""
+        self.client_reseau.deleteLater()
+        self.client_reseau = None
+        self.adresse_serveur.setEnabled(True)
+        self.port_serveur.setEnabled(True)
+        self.bouton_connexion.setText("Connecter")
+        self.bouton_connexion.setEnabled(True)
+        if self.derniere_erreur_reseau:
+            self.etat_reseau.setText("  Échec réseau — voir le journal")
+        else:
+            self.etat_reseau.setText("  Hors ligne — simulation locale")
+        self.journaliser("Connexion réseau terminée")
+        if self.fermeture_demandee:
+            self.close()
+
+    def closeEvent(self, evenement):
+        """Attend la fin du thread sans bloquer Qt avant de fermer la fenêtre."""
+        if self.client_reseau is not None:
+            self.fermeture_demandee = True
+            self.client_reseau.arreter()
+            self.bouton_connexion.setEnabled(False)
+            self.etat_reseau.setText("  Fermeture de la connexion…")
+            evenement.ignore()
+            return
+        self.minuteur.stop()
+        self.animation.stop()
+        self.arrivees.stop()
+        super().closeEvent(evenement)
 
     def changer_densite(self, valeur):
         """Applique le réglage aux prochaines arrivées de voitures."""
