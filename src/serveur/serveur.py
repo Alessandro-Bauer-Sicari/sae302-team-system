@@ -9,7 +9,7 @@ Rôles possibles : regulateur, capteur, feux (une connexion par rôle).
 Messages communs : ping, etat, quitter.
 Capteur uniquement : detection_ambulance et sortie_ambulance, avec direction N/S/E/O.
 
-Cette étape ne pilote pas encore les feux de la maquette.
+Le serveur pilote le client feux ; le raccordement à la maquette reste à faire.
 Les rôles identifient les clients ; ce n'est pas une authentification.
 """
 
@@ -29,6 +29,9 @@ else:
 
 
 ROLES = ("regulateur", "capteur", "feux")
+PHASES = [("vert", "rouge", 10), ("orange", "rouge", 2),
+          ("rouge", "rouge", 1), ("rouge", "vert", 10),
+          ("rouge", "orange", 2), ("rouge", "rouge", 1)]
 
 
 class Serveur:
@@ -47,6 +50,9 @@ class Serveur:
         self.direction_ambulance = None
         self.detection_valide = False
         self.revision_detection = 0
+        self.carrefour_occupe = None  # Inconnu jusqu'au premier signal capteur.
+        self.phase_feux = 5
+        self.fin_phase = time.monotonic() + 1
 
     def demarrer(self):
         """Écoute les connexions jusqu'à Ctrl+C ou à un appel à arreter()."""
@@ -126,6 +132,10 @@ class Serveur:
                     canal.envoyer(self.obtenir_etat())
                 elif message["type"] in ("detection_ambulance", "sortie_ambulance"):
                     canal.envoyer(self.traiter_detection(role, message))
+                elif message["type"] == "occupation":
+                    canal.envoyer(self.traiter_occupation(role, message))
+                elif message["type"] == "lire_feux":
+                    canal.envoyer(self.obtenir_feux())
                 elif message["type"] == "quitter":
                     break
                 else:
@@ -143,6 +153,9 @@ class Serveur:
                     if role == "capteur":
                         # Une perte du capteur ne prouve pas que l'ambulance est sortie.
                         self.detection_valide = False
+                        self.carrefour_occupe = None
+                        self.phase_feux = 5
+                        self.fin_phase = time.monotonic() + 1
                 self.connexions.discard(canal)
                 self.threads.discard(threading.current_thread())
             canal.fermer()
@@ -192,6 +205,59 @@ class Serveur:
             "type": "accuse_detection", "evenement": evenement,
             "direction": direction, "revision": revision,
         }
+
+    def traiter_occupation(self, role, message):
+        """Reçoit l'occupation ; un carrefour inconnu reste au rouge."""
+        if role != "capteur" or type(message.get("occupe")) is not bool:
+            return {"type": "erreur", "message": "Le capteur doit fournir occupe=true ou false."}
+        with self.verrou:
+            self.carrefour_occupe = message["occupe"]
+        return {"type": "accuse_occupation", "occupe": message["occupe"]}
+
+    def obtenir_feux(self, maintenant=None):
+        """Calcule les feux. L'horloge peut être fournie pour les tests.
+
+        Une transition au plus par appel évite de sauter l'orange après un
+        retard. La zone occupée interdit de libérer l'autre axe.
+        Pour cette étape, l'occupation est déclarée manuellement par le capteur.
+        """
+        maintenant = time.monotonic() if maintenant is None else maintenant
+        with self.verrou:
+            inconnu = ("capteur" not in self.clients or self.carrefour_occupe is None
+                       or (self.direction_ambulance is not None and not self.detection_valide))
+            direction = self.direction_ambulance
+            cible = None if direction is None else (0 if direction in ("N", "S") else 3)
+            raison = "Cycle normal"
+            if inconnu:
+                self.phase_feux = 5
+                self.fin_phase = maintenant + 1
+                raison = "Tout rouge : informations capteur indisponibles"
+            elif cible is not None and self.phase_feux == cible:
+                self.fin_phase = maintenant + 3
+                raison = "Priorité maintenue jusqu'au signal de sortie"
+            else:
+                if cible is not None and self.phase_feux in (0, 3):
+                    self.fin_phase = min(self.fin_phase, maintenant + 3)
+                if maintenant >= self.fin_phase:
+                    if self.phase_feux in (2, 5) and self.carrefour_occupe:
+                        raison = "Tout rouge : carrefour encore occupé"
+                    else:
+                        if self.phase_feux in (2, 5) and cible is not None:
+                            self.phase_feux = cible
+                        else:
+                            self.phase_feux = (self.phase_feux + 1) % len(PHASES)
+                        self.fin_phase = maintenant + PHASES[self.phase_feux][2]
+                if cible is not None and self.phase_feux != cible:
+                    raison += " — préparation de la priorité ambulance"
+            ns, eo, duree = PHASES[self.phase_feux]
+            return {
+                "type": "commande_feux",
+                "feux": {"N": ns, "S": ns, "E": eo, "O": eo},
+                "phase": self.phase_feux,
+                "raison": raison,
+                "carrefour_occupe": self.carrefour_occupe,
+                "direction_ambulance": direction,
+            }
 
     def arreter(self):
         """Signale l'arrêt et débloque les réceptions des clients."""
