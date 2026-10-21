@@ -5,7 +5,8 @@ Sur une autre machine : ajouter --hote ADRESSE_IP_DU_SERVEUR.
 Le client générique client.py et le module reseau.py sont nécessaires.
 
 Cette étape vérifie la transmission des détections. Les commandes saisies
-ne font pas apparaître de véhicule dans la maquette et ne changent pas les feux.
+ne font pas apparaître de véhicule dans la maquette. Elles influencent
+le client feux par le serveur ; la maquette graphique reste indépendante.
 Les détections seront ensuite produites automatiquement par la simulation.
 """
 
@@ -46,6 +47,16 @@ class Capteur(Client):
         return reponse
 
 
+    def signaler_occupation(self, occupe):
+        """Indique si des usagers sont encore dans la zone de traversée."""
+        if type(occupe) is not bool:
+            raise ValueError("L'occupation doit être un booléen.")
+        reponse = self.echanger({"type": "occupation", "occupe": occupe})
+        if reponse.get("type") != "accuse_occupation" or reponse.get("occupe") != occupe:
+            raise ValueError(reponse.get("message", "Occupation refusée."))
+        return reponse
+
+
 def afficher_detection(etat):
     """Distingue une absence confirmée d'une information indisponible."""
     detection = etat.get("detection")
@@ -64,13 +75,16 @@ def lancer_capteur(hote, port):
     capteur = Capteur(hote, port)
     try:
         capteur.connecter()
-        print("Capteur connecté. Commandes : arrivee N, sortie N, etat, quitter.")
+        print("Capteur connecté. Commandes : libre, occupe, arrivee N, sortie N, etat, quitter.")
         print("Directions disponibles : N, S, E, O. Détections manuelles pour ce test.")
         while True:
             mots = input("capteur> ").strip().lower().split()
             if mots == ["quitter"]:
                 return 0
-            if mots == ["etat"]:
+            if mots in (["libre"], ["occupe"]):
+                capteur.signaler_occupation(mots == ["occupe"])
+                print("Occupation confirmée par le serveur.")
+            elif mots == ["etat"]:
                 afficher_detection(capteur.obtenir_etat())
             elif len(mots) == 2 and mots[0] in ("arrivee", "sortie"):
                 try:
@@ -81,7 +95,7 @@ def lancer_capteur(hote, port):
                     if capteur.canal is None:
                         return 1
             elif mots:
-                print("Utilise arrivee N, sortie N, etat ou quitter (N/S/E/O).")
+                print("Utilise libre, occupe, arrivee N, sortie N, etat ou quitter (N/S/E/O).")
     except (KeyboardInterrupt, EOFError):
         print("\nFermeture du capteur.")
         return 0
