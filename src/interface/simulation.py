@@ -115,41 +115,6 @@ class SimulationCarrefour:
         for direction in ("E", "O"):
             self.changer_feu(direction, couleur_eo)
 
-    def avancer_cycle(self):
-        """Respecte les transitions et maintient le vert pendant la priorité."""
-        # Une traversée commencée se termine, même en cas d'alerte ambulance.
-        if self.pietons:
-            self.afficher_etat()
-            return
-        cible = self.phase_prioritaire()
-        if cible is not None and self.phase == cible:
-            # Aucun compte à rebours ne peut couper le vert à l'ambulance.
-            self.temps_restant = PHASES[self.phase][3]
-            self.afficher_etat()
-            return
-        if cible is not None and self.phase in (0, 3):
-            # Abréger le vert opposé, puis respecter l'orange et le tout rouge.
-            self.temps_restant = min(self.temps_restant, 3)
-
-        self.temps_restant -= 1
-        if self.temps_restant <= 0:
-            if self.phase in (2, 5) and self.carrefour_occupe():
-                self.temps_restant = 0
-                self.afficher_etat()
-                return
-            if self.phase in (2, 5) and self.demande_pietons and cible is None:
-                self.temps_restant = 0
-                self.commencer_traversee()
-                self.afficher_etat()
-                return
-            if self.phase in (2, 5) and cible is not None:
-                self.phase = cible
-            else:
-                self.phase = (self.phase + 1) % len(PHASES)
-            self.temps_restant = PHASES[self.phase][3]
-            self.appliquer_phase()
-        self.afficher_etat()
-
     def phase_prioritaire(self):
         """Renvoie le vert demandé (0 ou 3), ou None sans priorité."""
         if not self.priorite_mission:
@@ -301,3 +266,4 @@ class SimulationCarrefour:
                     self.ambulance = None
                     self.bouton_ambulance.setEnabled(True)
         self.afficher_etat()
+

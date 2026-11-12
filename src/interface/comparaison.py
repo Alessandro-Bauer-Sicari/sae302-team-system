@@ -1,6 +1,7 @@
 """Expérience reproductible et export CSV des mesures."""
 
 import csv
+from uuid import uuid4
 from PyQt6.QtCore import (
     QTimer,
 )
@@ -27,6 +28,16 @@ class Comparaison(QDialog):
         self.tour = 0
         self.nombre_tours = 3000  # 120 secondes de simulation à 40 ms.
         self.resultats = []
+        self.identifiant_bilan = str(uuid4())
+        self.sauvegarde_en_cours = False
+        self.bilan_sauve = False
+        self.client_bdd = getattr(parent, "client_reseau", None)
+        if self.client_bdd is not None and getattr(parent, "reseau_pret", False):
+            self.client_bdd.reponse_bdd.connect(self.recevoir_bdd)
+            self.client_bdd.erreur.connect(self.erreur_bdd)
+            self.client_bdd.finished.connect(self.bdd_deconnectee)
+        else:
+            self.client_bdd = None
         self.lignes = []
         disposition = QVBoxLayout(self)
         titre = QLabel("La priorité fait-elle gagner du temps ?")
@@ -62,6 +73,13 @@ class Comparaison(QDialog):
         self.export.setEnabled(False)
         self.export.clicked.connect(self.exporter)
         disposition.addWidget(self.export)
+        self.bouton_sauver = QPushButton("Enregistrer dans MariaDB")
+        self.bouton_sauver.setEnabled(False)
+        self.bouton_sauver.clicked.connect(self.sauver_bdd)
+        disposition.addWidget(self.bouton_sauver)
+        self.etat_bdd = QLabel("Connecter la maquette au serveur avant la comparaison pour sauvegarder." if self.client_bdd is None else "Sauvegarde automatique à la fin du calcul.")
+        self.etat_bdd.setWordWrap(True)
+        disposition.addWidget(self.etat_bdd)
         fermer = QPushButton("Fermer et reprendre la simulation")
         fermer.clicked.connect(self.reject)
         disposition.addWidget(fermer)
@@ -91,11 +109,7 @@ class Comparaison(QDialog):
                     simulation.demander_ambulance()
                 if self.tour == 600:  # 24 secondes.
                     simulation.demander_pietons()
-                if self.tour > 0 and self.tour % 20 == 0:
-                    simulation.ajouter_voitures()
-                if self.tour > 0 and self.tour % 25 == 0:
-                    simulation.avancer_cycle()
-                simulation.avancer_voitures()
+                simulation.pas_local()
             self.tour += 1
         self.progression.setValue(self.tour)
 
@@ -153,6 +167,46 @@ class Comparaison(QDialog):
         self.export.setEnabled(True)
         self.progression.setValue(self.nombre_tours)
         self.liberer_simulations()
+        if self.client_bdd is not None:
+            self.sauver_bdd()
+
+    def sauver_bdd(self):
+        """Le même UUID évite les doublons lors d'une nouvelle tentative."""
+        if self.client_bdd is None or self.sauvegarde_en_cours or self.bilan_sauve:
+            return
+        bilan = {"identifiant": self.identifiant_bilan, "densite": self.densite,
+                 "direction": self.direction, "graine": self.graine, "duree_s": 120,
+                 "version_modele": "carrefour-40ms-v1", "resultats": self.resultats}
+        self.sauvegarde_en_cours = True
+        self.bouton_sauver.setEnabled(False)
+        self.etat_bdd.setText("Enregistrement dans MariaDB…")
+        try:
+            self.client_bdd.demander_bdd({"type": "sauver_comparaison", "bilan": bilan})
+        except ValueError as erreur:
+            self.erreur_bdd(str(erreur))
+
+    def recevoir_bdd(self, reponse):
+        if reponse.get("operation") != "sauver_comparaison" or not self.sauvegarde_en_cours:
+            return
+        if reponse["type"] == "comparaison_sauvee":
+            self.sauvegarde_en_cours = False
+            self.bilan_sauve = True
+            self.etat_bdd.setText(f"Comparaison n°{reponse['id']} enregistrée dans MariaDB.")
+        else:
+            self.erreur_bdd(reponse.get("message", "Enregistrement non confirmé"))
+
+    def erreur_bdd(self, message):
+        if self.bilan_sauve:
+            return
+        self.sauvegarde_en_cours = False
+        self.etat_bdd.setText(f"Sauvegarde non confirmée : {message}. Le CSV reste disponible.")
+        self.bouton_sauver.setEnabled(self.client_bdd is not None and len(self.resultats) == 2)
+
+    def bdd_deconnectee(self):
+        self.client_bdd = None
+        if not self.bilan_sauve:
+            self.erreur_bdd("serveur déconnecté")
+        self.bouton_sauver.setEnabled(False)
 
     def enregistrer_csv(self, chemin):
         """Écrit les paramètres et les mesures, sans dépendance supplémentaire."""
@@ -193,7 +247,17 @@ class Comparaison(QDialog):
 
     def done(self, resultat):
         """Interrompt aussi le calcul si l'utilisateur ferme avant la fin."""
+        if self.sauvegarde_en_cours:
+            self.etat_bdd.setText("Attendre la réponse du serveur avant de fermer…")
+            return
         self.calcul.stop()
         self.liberer_simulations()
+        # Le dialogue reste parfois vivant après exec : retirer les abonnements.
+        if self.client_bdd is not None:
+            self.client_bdd.reponse_bdd.disconnect(self.recevoir_bdd)
+            self.client_bdd.erreur.disconnect(self.erreur_bdd)
+            self.client_bdd.finished.disconnect(self.bdd_deconnectee)
+            self.client_bdd = None
         super().done(resultat)
+
 

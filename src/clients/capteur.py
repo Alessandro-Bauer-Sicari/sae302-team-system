@@ -114,3 +114,4 @@ if __name__ == "__main__":
     if not 1 <= options.port <= 65535:
         arguments.error("Le port doit être compris entre 1 et 65535.")
     raise SystemExit(lancer_capteur(options.hote, options.port))
+

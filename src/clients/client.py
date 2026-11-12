@@ -8,7 +8,7 @@ Depuis la racine du projet, après avoir lancé le serveur :
 
 Sur un autre ordinateur, ajouter --hote ADRESSE_IP_DU_SERVEUR.
 Les commandes disponibles sont ping, etat, aide et quitter.
-Cette étape teste le réseau ; elle ne commande pas encore la maquette.
+Ce terminal sert au diagnostic hors session graphique.
 """
 
 import argparse
@@ -31,8 +31,7 @@ DELAI_REPONSE = 5  # Secondes avant de signaler un serveur qui ne répond pas.
 class Client:
     """Une connexion et des échanges demande/réponse, utilisés par un seul thread.
 
-    Ces méthodes sont bloquantes. Pour la future interface Qt, elles devront
-    être appelées dans un thread réseau, pas dans le thread de la fenêtre.
+    Ces méthodes sont bloquantes. L’interface les appelle dans son thread réseau.
     """
 
     def __init__(self, role, hote="127.0.0.1", port=PORT_SERVEUR):
@@ -157,3 +156,4 @@ if __name__ == "__main__":
     if not 1 <= options.port <= 65535:
         arguments.error("Le port doit être compris entre 1 et 65535.")
     raise SystemExit(lancer_client(options.role, options.hote, options.port))
+

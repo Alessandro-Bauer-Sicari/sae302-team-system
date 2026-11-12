@@ -9,7 +9,8 @@ Rôles possibles : regulateur, capteur, feux (une connexion par rôle).
 Messages communs : ping, etat, quitter.
 Capteur uniquement : detection_ambulance et sortie_ambulance, avec direction N/S/E/O.
 
-Le serveur pilote le client feux ; le raccordement à la maquette reste à faire.
+La maquette connectée utilise des étapes synchronisées de 40 ms.
+Les commandes manuelles restent disponibles hors session graphique.
 Les rôles identifient les clients ; ce n'est pas une authentification.
 """
 
@@ -17,6 +18,11 @@ import argparse
 import socket
 import threading
 import time
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.serveur.maquette import Maquette
+from src.serveur.stockage import StockageMariaDB, ErreurStockage
 
 # Accepte aussi le lancement direct : python src/serveur/serveur.py
 if __package__:
@@ -37,7 +43,8 @@ PHASES = [("vert", "rouge", 10), ("orange", "rouge", 2),
 class Serveur:
     """Un thread par client, avec un verrou pour les collections partagées."""
 
-    def __init__(self, hote="127.0.0.1", port=PORT_SERVEUR):
+    def __init__(self, hote="127.0.0.1", port=PORT_SERVEUR, stockage=None):
+        self.stockage = stockage
         self.hote = hote
         self.port = port
         self.arret = threading.Event()
@@ -47,6 +54,7 @@ class Serveur:
         self.connexions = set()  # Inclut les clients pas encore identifiés.
         self.threads = set()
         self.ecoute = None
+        self.maquette = None
         self.direction_ambulance = None
         self.detection_valide = False
         self.revision_detection = 0
@@ -126,7 +134,13 @@ class Serveur:
                 message = self.recevoir(canal)
                 if message is None:
                     break
-                if message["type"] == "ping":
+                if message["type"] in ("sauver_comparaison", "historique"):
+                    canal.envoyer(self.traiter_bdd(role, message))
+                elif message["type"] in ("initialiser", "mesure", "calculer", "commande"):
+                    canal.envoyer(self.traiter_maquette(role, message))
+                elif self.maquette is not None and message["type"] not in ("ping", "etat", "quitter"):
+                    canal.envoyer({"type": "erreur", "message": "Maquette connectée : commandes manuelles désactivées."})
+                elif message["type"] == "ping":
                     canal.envoyer({"type": "pong"})
                 elif message["type"] == "etat":
                     canal.envoyer(self.obtenir_etat())
@@ -150,6 +164,7 @@ class Serveur:
             with self.verrou:
                 if role is not None and self.clients.get(role) is canal:
                     del self.clients[role]
+                    self.maquette = None
                     if role == "capteur":
                         # Une perte du capteur ne prouve pas que l'ambulance est sortie.
                         self.detection_valide = False
@@ -166,6 +181,7 @@ class Serveur:
         """Renvoie une copie de la liste des rôles connectés."""
         with self.verrou:
             connectes = sorted(self.clients)
+            simulation_connectee = self.maquette is not None
             detection = {
                 "direction": self.direction_ambulance,
                 "valide": self.detection_valide,
@@ -175,9 +191,40 @@ class Serveur:
             "type": "etat",
             "clients": connectes,
             "nombre_clients": len(connectes),
-            "simulation_connectee": False,
+            "simulation_connectee": simulation_connectee,
             "detection": detection,
         }
+
+    def traiter_bdd(self, role, message):
+        """Seul le régulateur utilise la BDD ; aucun accès SQL depuis Windows."""
+        if role != "regulateur":
+            return {"type": "erreur_bdd", "message": "Accès réservé au régulateur"}
+        if self.stockage is None:
+            return {"type": "erreur_bdd", "message": "BDD désactivée : redémarrer le serveur avec --bdd"}
+        try:
+            if message["type"] == "sauver_comparaison":
+                identifiant = self.stockage.enregistrer(message.get("bilan"))
+                return {"type": "comparaison_sauvee", "id": identifiant}
+            return {"type": "historique", "lignes": self.stockage.historique()}
+        except (ValueError, ErreurStockage) as erreur:
+            return {"type": "erreur_bdd", "message": str(erreur)}
+
+    def traiter_maquette(self, role, message):
+        """Réserve les trois rôles pour une simulation synchronisée."""
+        with self.verrou:
+            try:
+                if set(self.clients) != set(ROLES):
+                    raise ValueError("Les trois clients doivent être connectés")
+                if message["type"] == "initialiser":
+                    if role != "regulateur" or self.maquette is not None:
+                        raise ValueError("Initialisation refusée")
+                    self.maquette = Maquette()
+                    return {"type": "initialise"}
+                if self.maquette is None:
+                    raise ValueError("Session interrompue : reconnecter la maquette")
+                return self.maquette.traiter(role, message)
+            except ValueError as erreur:
+                return {"type": "erreur", "message": str(erreur)}
 
     def traiter_detection(self, role, message):
         """Valide un signal du capteur et conserve la direction de l'ambulance."""
@@ -273,8 +320,14 @@ if __name__ == "__main__":
     arguments = argparse.ArgumentParser(description="Serveur TCP du carrefour")
     arguments.add_argument("--hote", default="127.0.0.1")
     arguments.add_argument("--port", type=int, default=PORT_SERVEUR)
+    arguments.add_argument("--bdd", action="store_true", help="Activer MariaDB locale")
     options = arguments.parse_args()
     try:
-        Serveur(options.hote, options.port).demarrer()
-    except OSError as erreur:
+        stockage = StockageMariaDB() if options.bdd else None
+        if stockage is not None:
+            stockage.verifier()
+            print("MariaDB activée", flush=True)
+        Serveur(options.hote, options.port, stockage).demarrer()
+    except (OSError, ErreurStockage) as erreur:
         raise SystemExit(f"Démarrage impossible : {erreur}")
+

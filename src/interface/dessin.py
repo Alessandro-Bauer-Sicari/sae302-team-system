@@ -123,3 +123,4 @@ class DessinCarrefour:
         else:
             x, y = TAILLE - distance, 355
         voiture["dessin"].setPos(x, y)
+

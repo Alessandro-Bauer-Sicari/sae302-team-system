@@ -7,6 +7,8 @@ méthodes qui utilisent cette même fenêtre (self).
 
 import sys
 import random
+import time
+import math
 from PyQt6.QtCore import (
     Qt, QTimer,
 )
@@ -14,26 +16,30 @@ from PyQt6.QtGui import (
     QPainter,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QGraphicsScene, QGraphicsView, QMainWindow, QLabel, QSlider, QToolBar, QPushButton, QComboBox, QCheckBox, QDockWidget, QPlainTextEdit, QLineEdit, QSpinBox,
+    QApplication, QGraphicsScene, QGraphicsView, QMainWindow, QLabel, QSlider, QToolBar, QPushButton, QComboBox, QCheckBox, QDockWidget, QPlainTextEdit, QLineEdit, QSpinBox, QMessageBox,
 )
 if __package__:
-    from .parametres import (PAS_TEMPS, PHASES, TAILLE)
+    from .parametres import (PAS_TEMPS, PHASES, TAILLE, DISTANCE_SORTIE)
 else:
-    from parametres import (PAS_TEMPS, PHASES, TAILLE)
+    from parametres import (PAS_TEMPS, PHASES, TAILLE, DISTANCE_SORTIE)
 
 
 if __package__:
     from .dessin import DessinCarrefour
     from .simulation import SimulationCarrefour
     from .comparaison import Comparaison
+    from .historique import Historique
     from ..clients.client_qt import ClientReseauQt
+    from ..controleur import Controleur, verifier_commande
 else:
     from dessin import DessinCarrefour
     from simulation import SimulationCarrefour
     from comparaison import Comparaison
+    from historique import Historique
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from src.clients.client_qt import ClientReseauQt
+    from src.controleur import Controleur, verifier_commande
 
 
 class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
@@ -43,9 +49,15 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         super().__init__()
         self.mode_comparaison = mode_comparaison
         self.client_reseau = None
+        self.controleur = Controleur()
+        self.mode_reseau = False
+        self.reseau_pret = False
+        self.en_attente = False
+        self.pause = False
+        self.compteur_pas = 0
+        self.commande_differee = None
         self.fermeture_demandee = False
         self.derniere_erreur_reseau = None
-        self.derniers_roles = None
         # Séparer les tirages d'arrivées des couleurs et des accidents.
         self.hasard_arrivees = random.Random(graine)
         self.temps_simule = 0.0
@@ -91,25 +103,14 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         self.appliquer_phase()
         self.afficher_etat()
 
-        # Qt appelle avancer_cycle une fois par seconde, sans bloquer la fenêtre.
-        self.minuteur = QTimer(self)
-        self.minuteur.setTimerType(Qt.TimerType.PreciseTimer)
-        self.minuteur.timeout.connect(self.avancer_cycle)
-        self.minuteur.start(1000)
-
-        # Le dessin des voitures est actualisé plus souvent que les feux.
+        # Une seule horloge : 40 ms simulées par étape effectivement terminée.
         self.animation = QTimer(self)
-        self.animation.timeout.connect(self.avancer_voitures)
+        self.animation.setTimerType(Qt.TimerType.PreciseTimer)
+        self.animation.timeout.connect(self.pas_animation)
         self.animation.start(int(PAS_TEMPS * 1000))
-
-        self.arrivees = QTimer(self)
-        self.arrivees.timeout.connect(self.ajouter_voitures)
-        self.arrivees.start(800)
         self.ajouter_voitures()
         if self.mode_comparaison:
-            self.minuteur.stop()
             self.animation.stop()
-            self.arrivees.stop()
         self.journaliser("Simulation démarrée")
 
     def creer_reglage_densite(self):
@@ -198,6 +199,9 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         barre.addWidget(bouton)
         self.mesure_mission = QLabel("  Aucun trajet mesuré")
         barre.addWidget(self.mesure_mission)
+        historique = QPushButton("Historique MariaDB")
+        historique.clicked.connect(self.ouvrir_historique)
+        barre.addWidget(historique)
 
         dock = QDockWidget("Journal des décisions", self)
         self.journal = QPlainTextEdit()
@@ -214,15 +218,85 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
             self.journal.appendPlainText(f"[{self.temps_simule:6.1f} s] {message}")
 
     def ouvrir_comparaison(self):
-        """Met la démonstration en pause pendant une expérience indépendante."""
-        self.minuteur.stop()
-        self.animation.stop()
-        self.arrivees.stop()
+        """Suspend la maquette ; la comparaison utilise le même contrôleur."""
+        self.pause = True
         dialogue = Comparaison(self, self.densite, self.choix_direction.currentData(), FenetrePrincipale)
         dialogue.exec()
-        self.minuteur.start()
-        self.animation.start()
-        self.arrivees.start()
+        self.pause = False
+        if self.commande_differee is not None:
+            commande = self.commande_differee
+            self.commande_differee = None
+            self.recevoir_etat_reseau(commande)
+
+    def ouvrir_historique(self):
+        if not self.reseau_pret or self.client_reseau is None:
+            QMessageBox.information(self, "Historique", "Connecte d'abord la maquette au serveur.")
+            return
+        self.pause = True
+        dialogue = Historique(self, self.client_reseau)
+        dialogue.exec()
+        self.pause = False
+        if self.commande_differee is not None:
+            commande = self.commande_differee
+            self.commande_differee = None
+            self.recevoir_etat_reseau(commande)
+
+    def relever_capteurs(self):
+        """Détecte automatiquement l'ambulance jusqu'à sa sortie complète."""
+        direction = self.demande_ambulance
+        if self.ambulance is not None and self.ambulance["distance"] < DISTANCE_SORTIE:
+            direction = self.ambulance["direction"]
+        return {"occupe": self.carrefour_occupe(), "ambulance": direction,
+                "priorite": self.priorite_mission, "pietons": bool(self.pietons),
+                "demande_pietons": self.demande_pietons}
+
+    def appliquer_commande(self, commande):
+        """Applique ensemble les feux et l'autorisation de traversée."""
+        verifier_commande(commande)
+        ancienne_phase = self.phase
+        self.phase = commande["phase"]
+        self.temps_restant = math.ceil(commande["restant"])
+        if ancienne_phase != self.phase:
+            self.appliquer_phase()
+        if commande["traverser"] and self.demande_pietons and not self.pietons:
+            self.commencer_traversee()
+        self.avancer_voitures()
+        self.compteur_pas += 1
+        if self.compteur_pas % 20 == 0:
+            self.ajouter_voitures()
+
+    def pas_local(self):
+        """Même décision qu'au serveur, sans transport TCP."""
+        self.appliquer_commande(self.controleur.avancer(self.relever_capteurs()))
+
+    def pas_animation(self):
+        if self.pause:
+            return
+        if not self.mode_reseau:
+            self.pas_local()
+        elif self.en_attente:
+            if time.monotonic() - self.debut_requete > 1.0:
+                self.signaler_erreur_reseau("Réponse trop lente : simulation suspendue, reconnecter.")
+                self.client_reseau.arreter()
+        elif self.reseau_pret and self.client_reseau is not None:
+            self.en_attente = True
+            self.debut_requete = time.monotonic()
+            self.client_reseau.proposer(self.relever_capteurs())
+
+    def mettre_au_rouge(self):
+        self.phase = 5
+        self.temps_restant = 1
+        self.appliquer_phase()
+        self.afficher_etat()
+
+    def reprendre_local(self):
+        if self.client_reseau is not None:
+            return
+        self.mode_reseau = False
+        self.controleur = Controleur()
+        self.mettre_au_rouge()
+        self.etat_reseau.setText("  Mode local — serveur non utilisé")
+        self.journaliser("Reprise locale demandée par l'utilisateur")
 
     def creer_commandes_reseau(self):
         """Ajoute l'adresse du serveur et les commandes de connexion."""
@@ -242,12 +316,18 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         self.bouton_connexion = QPushButton("Connecter")
         self.bouton_connexion.clicked.connect(self.basculer_connexion)
         barre.addWidget(self.bouton_connexion)
+        self.bouton_local = QPushButton("Reprendre en local")
+        self.bouton_local.clicked.connect(self.reprendre_local)
+        barre.addWidget(self.bouton_local)
         self.etat_reseau = QLabel("  Hors ligne — simulation locale")
         barre.addWidget(self.etat_reseau)
 
     def basculer_connexion(self):
         """Démarre ou arrête le thread réseau sans attendre dans l'interface."""
         if self.client_reseau is not None:
+            self.reseau_pret = False
+            self.en_attente = False
+            self.mettre_au_rouge()
             self.client_reseau.arreter()
             self.bouton_connexion.setEnabled(False)
             self.etat_reseau.setText("  Déconnexion en cours…")
@@ -257,7 +337,12 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
             self.etat_reseau.setText("  Saisis l'adresse du serveur.")
             return
         self.derniere_erreur_reseau = None
-        self.derniers_roles = None
+        self.mode_reseau = True
+        self.reseau_pret = False
+        self.en_attente = False
+        self.commande_differee = None
+        self.mettre_au_rouge()
+        self.bouton_local.setEnabled(False)
         self.adresse_serveur.setEnabled(False)
         self.port_serveur.setEnabled(False)
         self.bouton_connexion.setText("Annuler")
@@ -270,32 +355,40 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         self.client_reseau.start()
 
     def connexion_etablie(self):
-        """Confirme l'identification du régulateur auprès du serveur."""
         if self.client_reseau.arret.is_set():
             return
+        self.reseau_pret = True
         self.bouton_connexion.setText("Déconnecter")
-        self.etat_reseau.setText("  Connecté — lecture de l'état…")
-        self.journaliser("Connexion TCP établie avec le rôle régulateur")
+        self.etat_reseau.setText("  Connecté — capteur, régulateur, feux")
+        self.journaliser("Trois clients TCP connectés : le serveur commande les feux")
 
-    def recevoir_etat_reseau(self, etat):
-        """Affiche les clients présents ; la simulation reste locale à cette étape."""
-        if self.client_reseau.arret.is_set():
+    def recevoir_etat_reseau(self, commande):
+        if self.client_reseau is None or self.client_reseau.arret.is_set():
             return
-        roles = ", ".join(etat["clients"])
-        self.etat_reseau.setText(f"  Connectés : {roles} — simulation locale")
-        if roles != self.derniers_roles:
-            self.derniers_roles = roles
-            self.journaliser(f"Clients présents sur le serveur : {roles}")
+        if self.pause:
+            self.commande_differee = commande
+            return
+        self.en_attente = False
+        self.appliquer_commande(commande)
+        self.etat_reseau.setText(f"  Serveur actif — étape {commande['revision']}")
 
     def signaler_erreur_reseau(self, message):
-        """Conserve l'erreur à l'écran et dans le journal."""
         self.derniere_erreur_reseau = message
+        self.reseau_pret = False
+        self.en_attente = False
+        self.mettre_au_rouge()
+        self.etat_reseau.setText("  Incident réseau — simulation suspendue")
         self.journaliser(f"Erreur réseau : {message}")
 
     def connexion_terminee(self):
         """Libère le thread une fois arrêté et réactive les commandes."""
         self.client_reseau.deleteLater()
         self.client_reseau = None
+        self.reseau_pret = False
+        self.en_attente = False
+        self.commande_differee = None
+        self.mettre_au_rouge()
+        self.bouton_local.setEnabled(True)
         self.adresse_serveur.setEnabled(True)
         self.port_serveur.setEnabled(True)
         self.bouton_connexion.setText("Connecter")
@@ -303,7 +396,7 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         if self.derniere_erreur_reseau:
             self.etat_reseau.setText("  Échec réseau — voir le journal")
         else:
-            self.etat_reseau.setText("  Hors ligne — simulation locale")
+            self.etat_reseau.setText("  Déconnecté — simulation suspendue")
         self.journaliser("Connexion réseau terminée")
         if self.fermeture_demandee:
             self.close()
@@ -312,14 +405,14 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         """Attend la fin du thread sans bloquer Qt avant de fermer la fenêtre."""
         if self.client_reseau is not None:
             self.fermeture_demandee = True
+            self.reseau_pret = False
+            self.en_attente = False
             self.client_reseau.arreter()
             self.bouton_connexion.setEnabled(False)
             self.etat_reseau.setText("  Fermeture de la connexion…")
             evenement.ignore()
             return
-        self.minuteur.stop()
         self.animation.stop()
-        self.arrivees.stop()
         super().closeEvent(evenement)
 
     def changer_densite(self, valeur):
@@ -363,4 +456,5 @@ if __name__ == "__main__":
     fenetre = FenetrePrincipale()
     fenetre.show()
     sys.exit(application.exec())
+
 

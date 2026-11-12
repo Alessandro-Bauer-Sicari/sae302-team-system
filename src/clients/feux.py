@@ -2,7 +2,8 @@
 
 Lancement : python -m src.clients.feux [--hote IP_DU_SERVEUR]
 Le client capteur doit déclarer libre pour autoriser le cycle.
-Ce terminal représente les feux réseau ; il ne pilote pas encore le dessin Qt.
+Terminal de diagnostic autonome. La fenêtre utilise client_qt.py pour appliquer
+les commandes au dessin ; ne pas lancer ce terminal en même temps.
 """
 
 import argparse
@@ -79,3 +80,4 @@ if __name__ == "__main__":
     if not 1 <= options.port <= 65535:
         arguments.error("Le port doit être compris entre 1 et 65535.")
     raise SystemExit(lancer_feux(options.hote, options.port))
+

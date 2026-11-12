@@ -103,3 +103,4 @@ class ConnexionJSON:
 
 if __name__ == "__main__":
     print("Module réseau prêt : il sera importé par le serveur et les clients.")
+
