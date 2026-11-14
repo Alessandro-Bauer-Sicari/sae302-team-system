@@ -1,173 +1,279 @@
-# Team System — Carrefour connecté
+# Team System - Carrefour connecté
 
-Maquette pédagogique de la SAÉ 3.02 : un carrefour, quatre entrées, voitures,
-ambulance prioritaire, piétons, accidents et comparaison avec/sans priorité.
-Interface Python/PyQt6, serveur TCP/JSON avec la bibliothèque standard.
+**SAÉ 3.02 - Alessandro BAUER-SICARI et Yacine BENNOUNE**
 
-## Nouvelle version avec MariaDB
+Notre projet est une simulation de carrefour en Python. On peut régler le trafic, envoyer une ambulance, demander une traversée piétonne et provoquer un accident. On peut aussi comparer le temps de passage avec et sans priorité, puis garder les résultats dans MariaDB.
 
-Pour installer la base sur la VM Debian et connecter Windows, suivre
-**[INSTALLATION_BDD.md](INSTALLATION_BDD.md)**. Le serveur doit être lancé avec
-`--bdd` pour enregistrer les comparaisons et consulter leur historique.
-Les commandes ci-dessous sans cette option restent utilisables sans base.
+L’interface graphique a été réalisée avec l’aide de l’IA. L’IA nous a aussi aidés pour le code, les tests et les erreurs d’installation. Les détails sont dans [IAGraphie.pdf](IAGraphie.pdf).
 
-## Démarrage sous Windows
+## Installation complète, dans l’ordre
 
-Extraire ce dossier, par exemple dans `C:\Temp\carrefour-final`.
-Ouvrir PowerShell et se placer dans le dossier contenant `lancer.py` :
+Les commandes ci-dessous correspondent à nos deux VM Debian 13 avec un bureau graphique. Notre compte Linux s’appelle `vboxuser`. Remplacer ce nom si votre compte est différent. Les réglages réseau se font dans le terminal de VirtualBox, car ils peuvent couper une connexion distante.
 
-```powershell
-cd C:\Temp\carrefour-final
-```
+### 1. Préparer les cartes dans VirtualBox
 
-Si l'environnement `C:\.venv` utilisé précédemment existe :
+Éteindre les deux VM. Dans **Configuration > Réseau**, faire les réglages suivants sur chacune :
 
-```powershell
-C:\.venv\Scripts\python.exe -m pip install -r requirements.txt
-C:\.venv\Scripts\python.exe -m src.serveur.serveur
-```
+- **Carte 1 : NAT**, avec « Câble branché » coché, pour Internet.
+- **Carte 2 : Réseau privé hôte (Host-only)**, avec « Câble branché » coché.
+- Choisir le **même réseau privé hôte** pour les deux VM. Dans nos essais, c’est le réseau `192.168.56.0/24`, avec le serveur DHCP VirtualBox activé.
 
-Garder ce premier terminal ouvert. Dans un deuxième PowerShell :
+Si aucun réseau privé hôte n’existe, le créer dans le gestionnaire réseau de VirtualBox et activer son DHCP. Démarrer ensuite les VM. Les commandes Linux ne remplacent pas ces réglages VirtualBox.
 
-```powershell
-cd C:\Temp\carrefour-final
-C:\.venv\Scripts\python.exe lancer.py
-```
+### 2. Donner les droits sudo au compte — sur chaque VM
 
-Dans la fenêtre, garder `127.0.0.1`, port `5000`, puis cliquer sur **Connecter**.
-Le texte « Serveur actif — étape … » doit avancer. Les détections sont automatiques.
-Il ne faut pas lancer en plus les anciens clients de terminal : leurs rôles sont
-utilisés par la fenêtre.
-
-Si `C:\.venv` n'existe pas, créer un environnement avec le Python complet déjà
-repéré sur ton ordinateur (adapter le chemin si nécessaire) :
-
-```powershell
-& "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe" -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-Dans les commandes précédentes, remplacer ensuite `C:\.venv\Scripts\python.exe`
-par `.\.venv\Scripts\python.exe`. Ne pas utiliser le Python de WAPT.
-
-## Autre système ou VM
-
-Python 3.10 ou supérieur pour l'interface ; version vérifiée : Python 3.12.14,
-PyQt6 6.12.0. Depuis la racine du projet :
+Si le message `vboxuser is not in the sudoers file` apparaît, ouvrir une session root :
 
 ```bash
-python -m venv .venv
-# Linux : source .venv/bin/activate
-# Windows : utiliser directement .venv\Scripts\python.exe
-python -m pip install -r requirements.txt
-python -m src.serveur.serveur --hote 0.0.0.0 --port 5000
+su -
 ```
 
-Sur le poste graphique, lancer `python lancer.py`, saisir l'adresse IP de la VM
-serveur et cliquer sur **Connecter**. Le serveur seul ne nécessite pas PyQt6.
-Autoriser TCP 5000 sur le réseau privé entre ces deux postes si le pare-feu le bloque.
+Saisir le **mot de passe root**, puis exécuter :
 
-**Les VM ne sont pas créées par ce code.** La recette sur les machines finales reste à effectuer.
+```bash
+usermod -aG sudo vboxuser
+reboot
+```
 
-## Fonctionnement du réseau
+Après le redémarrage, se reconnecter avec `vboxuser`, puis vérifier :
 
-La fenêtre ouvre trois connexions TCP distinctes, dans un thread réseau :
+```bash
+id
+sudo -v
+```
 
-1. **Capteur** : transmet occupation, direction de l'ambulance, option de priorité,
-   demande de piétons et traversée en cours.
-2. **Régulateur** : demande au serveur de calculer la prochaine étape.
-3. **Feux** : reçoit la commande, qui est appliquée aux feux et aux déplacements Qt.
+Cette fois, sudo demande le **mot de passe de vboxuser**. Les mots de passe ne s’affichent pas pendant la saisie. Si le compte a déjà les droits sudo, passer directement à l’étape suivante. Si le mot de passe root n’est pas disponible sur une machine de l’IUT, demander à l’enseignant d’accorder les droits nécessaires.
 
-Ces trois clients logiques tournent dans le même programme graphique. Cette version
-se déploie donc sur une machine serveur et une machine graphique, physiques ou VM.
-Elle ne fournit pas trois applications graphiques réparties sur trois VM clientes.
-Vérifier la répartition demandée avec les consignes du cours avant de créer les VM.
+### 3. Nommer les VM
 
-Une seule mesure est en attente à la fois. Les messages portent un numéro d'étape.
-Le serveur refuse les messages périmés, les étapes désordonnées et les mauvais rôles.
-Le temps avance de **40 ms simulées** après chaque réponse appliquée. Le réseau lent
-ralentit la simulation ; il ne fait jamais sauter une phase de sécurité.
+Sur la VM serveur uniquement :
 
-En l'absence de réponse pendant une seconde : tous les feux affichent rouge et la
-simulation reste suspendue. Le thread ferme ses connexions au plus tard après son
-délai réseau de cinq secondes par échange en cours. Une reconnexion repart au rouge.
-**Reprendre en local** permet de reprendre explicitement sans serveur.
+```bash
+sudo hostnamectl set-hostname TEAM-SYSTEM-SERVEUR
+```
 
-Les rôles sont des identifiants de protocole, pas une authentification.
+Sur la VM cliente uniquement :
 
-## Règles de circulation
+```bash
+sudo hostnamectl set-hostname TEAM-SYSTEM-CLIENT
+```
 
-- Cycle normal : nord/sud vert 10 s, orange 2 s, tout rouge 1 s ; puis est/ouest pareil.
-- Un véhicule déjà engagé finit de traverser. L'autre axe attend que la zone soit libre.
-- Ambulance : détection dès la demande, même si elle attend pour entrer ; vert opposé
-  ramené à 3 s maximum, puis orange et tout rouge. Vert prioritaire maintenu jusqu'au
-  franchissement de la sortie à 565 pixels par le centre du véhicule.
-- Le choix « Priorité ambulance » s'applique à la prochaine mission.
-- Les piétons demandent une traversée : elle commence au tout rouge, carrefour libre,
-  sans priorité ambulance active. Une traversée commencée se termine toujours : 6,8 s.
-- Densité : probabilité d'une tentative d'arrivée, par entrée, toutes les 800 ms.
-  Une entrée encombrée refuse l'arrivée ; aucune file cachée hors écran.
-- Accident : une voiture immobilisée 20 s, hors centre et passages piétons ; dégagement
-  manuel possible. Les accidents automatiques tentent une création en moyenne toutes
-  les 55 s. L'ambulance ne double pas une voiture bloquée.
-- Le journal utilise le temps simulé.
+Sur chaque VM, vérifier :
 
-## Comparaison et export
+```bash
+hostname
+```
 
-Le bouton « Comparer avec / sans priorité » suspend la démonstration, puis simule
-120 s deux fois : même densité, direction, graine 2026, ambulance à 12 s et piétons
-à 24 s. Accidents désactivés pour rendre l'expérience reproductible.
+Le nom dans un terminal déjà ouvert peut rester ancien : fermer puis rouvrir ce terminal.
 
-Le calcul est local et utilise exactement la classe de décision employée par le
-serveur. Il mesure la politique de priorité, pas la latence réseau. Le tableau et
-l'export CSV comprennent temps de mission, attente des piétons, attente automobile,
-arrivées demandées, admises, refusées et sorties. Une mission non terminée est indiquée.
-Le gain de l'ambulance peut augmenter l'attente des autres usagers.
+### 4. Repérer les cartes et les profils — sur chaque VM
 
-## Fichiers à apprendre dans cet ordre
+```bash
+ip -br a
+nmcli device status
+nmcli -f NAME,UUID,TYPE,DEVICE connection show
+```
 
-| Fichier | Rôle |
+Dans notre installation :
+
+| Élément | Nom utilisé |
 | --- | --- |
-| `lancer.py` | Démarrage de la fenêtre |
-| `src/interface/parametres.py` | Dimensions et paramètres d'affichage |
-| `src/interface/dessin.py` | Dessin du carrefour et des usagers |
-| `src/controleur.py` | Décisions et durées des feux, sans Qt |
-| `src/interface/simulation.py` | Déplacements, ambulance, piétons et accidents |
-| `src/interface/main.py` | Boutons, horloge et application des commandes |
-| `src/interface/comparaison.py` | Deux expériences et export CSV |
-| `src/reseau.py` | Messages JSON délimités par une fin de ligne |
-| `src/clients/client.py` | Connexion TCP et échanges demande/réponse |
-| `src/clients/client_qt.py` | Trois connexions dans un thread Qt |
-| `src/serveur/maquette.py` | Ordre des étapes et contrôle des révisions |
-| `src/serveur/serveur.py` | Serveur multiclient et verrou d'accès |
-| `src/serveur/stockage.py` | Validation et requêtes MariaDB |
-| `src/interface/historique.py` | Consultation des résultats sauvegardés |
-| `bdd/schema.sql` | Création des deux tables |
-| `tests/test_integration.py` et `tests/test_bdd.py` | Tests automatiques |
+| Carte NAT, Internet | `enp0s3` |
+| Carte du réseau privé entre les VM | `enp0s8` |
+| Profil initial partagé entre les cartes | `Wired connection 1` |
 
-`src/clients/capteur.py` et `feux.py` restent des outils manuels de diagnostic hors
-session graphique. Leur cycle historique n'est pas utilisé par la maquette connectée.
+**Adapter les noms dans les commandes suivantes si les résultats sont différents.** Ces commandes supposent NetworkManager, comme dans nos VM Debian graphiques. Notre problème venait d’un seul profil utilisé alternativement par les deux cartes.
 
-## Vérification
-
-```powershell
-C:\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
-
-Les tests fonctionnent sans écran grâce au mode Qt `offscreen`. Voir
-`docs/TESTS_ETAPE_1.md` pour le résultat et les limites de la recette.
-
-## Ajouter au dépôt GitHub
-
-Cette archive contient le code complet de cette étape, à copier dans la racine du
-dépôt existant. **Conserver les documents déjà présents dans `docs` et `bdd`.**
-Ne pas envoyer `.venv`, `__pycache__` ou le ZIP dans le dépôt.
+### 5. Fixer le profil privé sur la deuxième carte — sur chaque VM
 
 ```bash
-git add src bdd lancer.py requirements.txt README.md INSTALLATION_BDD.md tests docs
-git commit -m "Ajouter MariaDB et l historique des comparaisons"
-git push
+sudo nmcli connection modify "Wired connection 1" connection.interface-name enp0s8 connection.autoconnect yes ipv4.never-default yes ipv6.never-default yes
 ```
 
-Le code inclut la sauvegarde MariaDB. Les rendus scolaires et les
-tests sur les machines finales restent à réaliser.
+Cette commande réserve le profil à `enp0s8`. Elle empêche aussi cette carte de remplacer la route Internet. Le profil de nos VM utilise déjà DHCP ; les adresses privées sont attribuées par VirtualBox.
+
+### 6. Créer le profil Internet — sur chaque VM
+
+Si aucun profil `INTERNET` n’existe dans la liste de l’étape 4, le créer une seule fois :
+
+```bash
+sudo nmcli connection add type ethernet ifname enp0s3 con-name INTERNET ipv4.method auto connection.autoconnect yes
+```
+
+S’il existe déjà, ne pas le recréer. Pour vérifier et remettre ses paramètres :
+
+```bash
+sudo nmcli connection modify INTERNET connection.interface-name enp0s3 connection.autoconnect yes ipv4.method auto ipv4.never-default no
+```
+
+Activer les deux profils :
+
+```bash
+sudo nmcli connection up "Wired connection 1"
+sudo nmcli connection up INTERNET
+```
+
+### 7. Vérifier le réseau — sur chaque VM
+
+```bash
+ip -br a
+ip route
+getent hosts github.com
+```
+
+Résultat attendu dans notre configuration :
+
+- `enp0s3` possède une adresse NAT, généralement `10.0.2.15`.
+- `enp0s8` possède une adresse privée en `192.168.56.x`.
+- La route `default` passe par `10.0.2.2` sur `enp0s3`.
+- `getent hosts github.com` affiche une adresse IP.
+
+Les deux VM peuvent avoir la même adresse NAT `10.0.2.15` : c’est normal avec leurs réseaux NAT séparés. Pour les relier, utiliser les adresses **privées** d’`enp0s8`, qui doivent être différentes.
+
+Nos adresses lors des essais : serveur **192.168.56.103**, client **192.168.56.104**. Elles peuvent changer après importation des VM : relever les adresses actuelles.
+
+Depuis la VM cliente, tester le serveur (adapter l’adresse si elle a changé) :
+
+```bash
+ping -c 4 192.168.56.103
+```
+
+Si le ping ne répond pas, vérifier que le serveur est allumé et que les deux cartes privées utilisent le même réseau VirtualBox.
+
+### 8. Installer les outils et récupérer le projet — sur chaque VM
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv
+python3 --version
+cd ~
+git clone https://github.com/Alessandro-Bauer-Sicari/sae302-team-system.git
+cd ~/sae302-team-system
+ls
+```
+
+On doit voir notamment `lancer.py`, `requirements.txt`, `src` et `bdd`.
+
+**Si le dossier existe déjà**, ne pas refaire `git clone`. Utiliser à la place :
+
+```bash
+cd ~/sae302-team-system
+git status
+git pull --ff-only
+ls
+```
+
+Conserver les modifications locales avant de mettre le dépôt à jour. Si Git bloque la mise à jour, ne pas supprimer les fichiers pour forcer le passage.
+
+### 9. Installer MariaDB — uniquement sur la VM serveur
+
+Depuis le compte normal `vboxuser` :
+
+```bash
+cd ~/sae302-team-system
+bash bdd/installer.sh
+systemctl is-active mariadb
+mariadb team_system < bdd/verifier.sql
+```
+
+Le script installe MariaDB et `python3-mariadb-connector`, démarre le service et crée les tables. Le message attendu est `MariaDB prête pour Team System`. La vérification du service doit afficher `active`. Une base neuve ne contient pas encore de comparaisons.
+
+Ne pas ajouter sudo devant `bash bdd/installer.sh` : le script utilise sudo seulement pour les opérations qui en ont besoin. Le compte SQL est lié au compte Linux ; aucun mot de passe SQL n’est à mettre dans le code.
+
+### 10. Lancer le serveur Python
+
+```bash
+cd ~/sae302-team-system
+python3 -m venv --system-site-packages .venv-serveur
+.venv-serveur/bin/python -c "import mariadb; print('Connecteur MariaDB disponible')"
+.venv-serveur/bin/python -m src.serveur.serveur --hote 0.0.0.0 --port 5000 --bdd
+```
+
+`--system-site-packages` permet au venv de voir le connecteur installé par Debian. Le serveur seul n’a pas besoin de PyQt6. Les messages attendus sont `MariaDB activée` puis `Serveur prêt sur 0.0.0.0:5000`. Garder ce terminal ouvert.
+
+Dans nos essais, nous avons aussi utilisé directement le Python système, **à la place** du lancement précédent :
+
+```bash
+python3 -m src.serveur.serveur --hote 0.0.0.0 --port 5000 --bdd
+```
+
+Choisir un seul lancement : ne pas démarrer deux serveurs sur le même port.
+
+### 11. Installer et lancer l’interface — uniquement sur la VM cliente
+
+```bash
+cd ~/sae302-team-system
+sudo apt install -y libegl1 libxcb-cursor0
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python lancer.py
+```
+
+`requirements.txt` contient PyQt6 6.12.0. Les dépendances MariaDB du serveur sont installées séparément par le script. Les autres modules Python utilisés font partie de la bibliothèque standard.
+
+Lors de nos essais sur Debian, nous avons utilisé cette autre méthode avec les paquets système :
+
+```bash
+sudo apt install -y python3-pyqt6
+python3 lancer.py
+```
+
+Les deux méthodes sont des alternatives. Le Python utilisé pour lancer l’application doit pouvoir accéder à PyQt6. La méthode venv utilise la version fixée dans `requirements.txt` ; la méthode apt utilise celle fournie par Debian.
+
+### 12. Connecter l’interface et vérifier la sauvegarde
+
+Dans la fenêtre du client, saisir l’adresse privée actuelle du serveur, par exemple `192.168.56.103`, et le port `5000`, puis cliquer sur **Connecter**. Le texte **Serveur actif** doit apparaître et le numéro d’étape doit avancer.
+
+Cliquer sur **Comparer avec / sans priorité**, attendre la confirmation d’enregistrement, puis ouvrir **Historique MariaDB**. Chaque comparaison a deux lignes. Fermer et rouvrir l’application permet de vérifier que les résultats sont conservés.
+
+Ne pas lancer les anciens clients de diagnostic en même temps : l’interface ouvre déjà les trois connexions nécessaires.
+
+### 13. Relancer le projet les jours suivants
+
+Il n’est pas nécessaire de refaire les installations ou la configuration réseau.
+
+Sur le serveur, avec le venv :
+
+```bash
+cd ~/sae302-team-system
+.venv-serveur/bin/python -m src.serveur.serveur --hote 0.0.0.0 --port 5000 --bdd
+```
+
+Sur le client, avec le venv :
+
+```bash
+cd ~/sae302-team-system
+.venv/bin/python lancer.py
+```
+
+Si l’installation a été faite avec les paquets système, utiliser les commandes `python3` indiquées aux étapes 10 et 11. MariaDB démarre normalement avec la VM. Si nécessaire, sur le serveur :
+
+```bash
+sudo systemctl start mariadb
+```
+
+Pour arrêter : fermer l’interface, puis faire **Ctrl+C** dans le terminal du serveur. Éteindre les VM normalement avant de les exporter.
+
+## Utilisation
+
+1. Démarrer le serveur, puis l’interface sur la VM cliente.
+2. Saisir l’adresse du serveur (dans nos essais : `192.168.56.103`) et le port `5000`, puis cliquer sur **Connecter**. Vérifier l’adresse avec `ip -br a` sur le serveur si nécessaire.
+3. Régler la densité, choisir une direction et envoyer une ambulance.
+4. Cliquer sur **Comparer avec / sans priorité**, attendre la fin puis vérifier le message de sauvegarde.
+5. Ouvrir **Historique MariaDB** pour retrouver les deux résultats de chaque comparaison. L’export CSV est aussi disponible.
+
+Sans connexion au serveur, l’application fonctionne en local mais ne sauvegarde pas dans MariaDB. Fermer la fenêtre pour quitter ; Ctrl+C arrête le serveur.
+
+## Tests et limites
+
+Les connexions depuis Windows et entre les deux VM Debian ont été essayées. La sauvegarde et la relecture de l’historique fonctionnent. Le lancement sur les VM a été vérifié avec les paquets Python système ; le parcours venv ci-dessus reste à rejouer lors de la recette d’installation.
+
+Pour lancer les tests depuis le dossier du projet sur le client :
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+Sans base de test configurée, 14 tests s’exécutent et 5 tests MariaDB sont ignorés. Voir `docs/TESTS_BDD.md` pour les tests avec une base séparée. Ne pas utiliser la base de démonstration pour ces tests.
+
+Le serveur reçoit trois connexions logiques regroupées dans la même interface. Les échanges TCP ne sont ni authentifiés ni chiffrés : utiliser le réseau privé de démonstration. L’ambulance ne dépasse pas les voitures accidentées. Une traversée piétonne commencée se termine avant son passage. La base garde les comparaisons, pas tous les événements.
