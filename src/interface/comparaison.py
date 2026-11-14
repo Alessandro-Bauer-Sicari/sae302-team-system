@@ -19,6 +19,18 @@ class Comparaison(QDialog):
     """
 
     def __init__(self, parent, densite, direction, classe_fenetre):
+        """Prépare deux simulations identiques, sans puis avec priorité.
+
+        Args:
+            parent (QWidget | None): Fenêtre principale, utilisée aussi pour
+                récupérer la connexion MariaDB si elle est disponible.
+            densite (int): Densité commune aux deux scénarios.
+            direction (str): Entrée de l'ambulance : N, S, E ou O.
+            classe_fenetre (type): Classe utilisée pour créer les simulations.
+
+        Le calcul est lancé par lots via une horloge Qt pour garder
+        l'interface réactive.
+        """
         super().__init__(parent)
         self.setWindowTitle("Expérience — avec et sans priorité")
         self.resize(820, 610)
@@ -186,6 +198,11 @@ class Comparaison(QDialog):
             self.erreur_bdd(str(erreur))
 
     def recevoir_bdd(self, reponse):
+        """Traite la confirmation ou l'échec de la sauvegarde en cours.
+
+        Args:
+            reponse (dict): Réponse réseau associée à sauver_comparaison.
+        """
         if reponse.get("operation") != "sauver_comparaison" or not self.sauvegarde_en_cours:
             return
         if reponse["type"] == "comparaison_sauvee":
@@ -196,6 +213,11 @@ class Comparaison(QDialog):
             self.erreur_bdd(reponse.get("message", "Enregistrement non confirmé"))
 
     def erreur_bdd(self, message):
+        """Affiche l'échec de sauvegarde et permet un réessai si possible.
+
+        Args:
+            message (str): Cause de l'erreur à afficher à l'utilisateur.
+        """
         if self.bilan_sauve:
             return
         self.sauvegarde_en_cours = False
@@ -203,6 +225,7 @@ class Comparaison(QDialog):
         self.bouton_sauver.setEnabled(self.client_bdd is not None and len(self.resultats) == 2)
 
     def bdd_deconnectee(self):
+        """Désactive la sauvegarde lorsque le serveur n'est plus connecté."""
         self.client_bdd = None
         if not self.bilan_sauve:
             self.erreur_bdd("serveur déconnecté")

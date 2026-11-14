@@ -24,6 +24,12 @@ class Feux(Client):
     """Reçoit les quatre couleurs ; revient au rouge sur erreur de connexion."""
 
     def __init__(self, hote="127.0.0.1", port=PORT_SERVEUR):
+        """Prépare le client des feux avec les quatre directions au rouge.
+
+        Args:
+            hote (str): Adresse du serveur.
+            port (int): Port TCP du serveur.
+        """
         super().__init__("feux", hote, port)
         self.couleurs = dict.fromkeys(("N", "S", "E", "O"), "rouge")
 

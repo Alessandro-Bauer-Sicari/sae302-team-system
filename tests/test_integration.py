@@ -19,6 +19,14 @@ APP = QApplication.instance() or QApplication([])
 
 
 def mesure(**modifications):
+    """Renvoie une mesure de carrefour libre avec les valeurs demandées.
+
+    Args:
+        **modifications: Champs à remplacer dans la mesure de départ.
+
+    Returns:
+        dict: Mesure à envoyer au contrôleur ou au serveur.
+    """
     valeur = dict(occupe=False, ambulance=None, priorite=True,
                   pietons=False, demande_pietons=False)
     valeur.update(modifications)
@@ -26,6 +34,15 @@ def mesure(**modifications):
 
 
 def attendre(condition, secondes=5):
+    """Traite les événements Qt jusqu'à la condition ou la fin du délai.
+
+    Args:
+        condition (callable): Fonction sans argument indiquant si l'attente est finie.
+        secondes (float): Durée maximale de l'attente.
+
+    Raises:
+        AssertionError: Si la condition reste fausse après le délai.
+    """
     limite = time.monotonic() + secondes
     while not condition() and time.monotonic() < limite:
         APP.processEvents()
@@ -35,7 +52,9 @@ def attendre(condition, secondes=5):
 
 
 class ControleurTests(unittest.TestCase):
+    """Teste les durées des feux et les règles de sécurité du contrôleur."""
     def test_durees_et_cycle(self):
+        """Vérifie le nombre de pas et l'ordre des phases du cycle normal."""
         c = Controleur()
         for phase, tours in ((5,25),(0,250),(1,50),(2,25),(3,250),(4,50)):
             self.assertEqual(c.phase, phase)
@@ -46,6 +65,7 @@ class ControleurTests(unittest.TestCase):
         self.assertEqual(c.phase,5)
 
     def test_priorite_quatre_directions_et_sortie(self):
+        """Vérifie les transitions et le maintien du vert pour les quatre directions."""
         for direction in 'NSEO':
             c = Controleur()
             cible = 0 if direction in 'NS' else 3
@@ -65,6 +85,7 @@ class ControleurTests(unittest.TestCase):
             self.assertIn(c.phase,(1,4))
 
     def test_pietons_avant_ambulance_deja_engages(self):
+        """Vérifie que les piétons engagés finissent avant le vert de l'ambulance."""
         c=Controleur()
         for _ in range(25): r=c.avancer(mesure(demande_pietons=True))
         self.assertTrue(r['traverser'])
@@ -75,6 +96,7 @@ class ControleurTests(unittest.TestCase):
         self.assertEqual(c.phase,3)
 
     def test_sans_priorite_et_donnees_invalides(self):
+        """Vérifie le cycle sans priorité et le rejet de mesures ou de feux incompatibles."""
         a,b=Controleur(),Controleur()
         for _ in range(800):
             self.assertEqual(a.avancer(mesure()),b.avancer(mesure(ambulance='E',priorite=False)))
@@ -85,7 +107,9 @@ class ControleurTests(unittest.TestCase):
 
 
 class ReseauTests(unittest.TestCase):
+    """Teste les échanges TCP et leur intégration à la fenêtre Qt."""
     def setUp(self):
+        """Démarre un serveur sur un port libre et prépare la liste des clients."""
         self.serveur=Serveur(port=0)
         self.thread=threading.Thread(target=self.serveur.demarrer)
         self.thread.start()
@@ -93,19 +117,30 @@ class ReseauTests(unittest.TestCase):
         self.clients=[]
 
     def tearDown(self):
+        """Ferme les clients et vérifie l'arrêt du thread serveur après le test."""
         for c in self.clients: c.fermer()
         self.serveur.arreter(); self.thread.join(3)
         self.assertFalse(self.thread.is_alive())
 
     def connecter(self,role):
+        """Connecte un client et le garde pour le fermer après le test.
+
+        Args:
+            role (str): Rôle du client à connecter.
+
+        Returns:
+            Client: Client TCP connecté au serveur de test.
+        """
         c=Client(role,port=self.serveur.port);c.connecter();self.clients.append(c);return c
 
     def session(self):
+        """Ouvre les trois clients, initialise la session et renvoie leurs instances."""
         r,c,f=[self.connecter(role) for role in ('regulateur','capteur','feux')]
         self.assertEqual(r.echanger({'type':'initialiser'})['type'],'initialise')
         return r,c,f
 
     def test_tcp_identique_controleur_local(self):
+        """Compare pas à pas les commandes du serveur avec celles du contrôleur local."""
         r,c,f=self.session(); local=Controleur()
         for i in range(1,901):
             m=mesure(ambulance='E' if 100<i<550 else None,
@@ -118,6 +153,7 @@ class ReseauTests(unittest.TestCase):
         self.assertTrue(r.obtenir_etat()['simulation_connectee'])
 
     def test_maquette_complete_sur_tcp(self):
+        """Vérifie une simulation TCP complète et l'absence d'axes opposés au centre."""
         r,c,feux=self.session()
         fenetre=FenetrePrincipale(45,2026,True)
         fenetre.accidents_aleatoires.setChecked(False)
@@ -140,6 +176,7 @@ class ReseauTests(unittest.TestCase):
         finally: fenetre.close()
 
     def test_revision_roles_doublons_et_capteur_perdu(self):
+        """Vérifie le contrôle des révisions et des rôles, puis la perte du capteur."""
         r,c,f=self.session()
         self.assertEqual(r.echanger({'type':'mesure','revision':1,'mesure':mesure()})['type'],'erreur')
         self.assertEqual(c.echanger({'type':'mesure','revision':2,'mesure':mesure()})['type'],'erreur')
@@ -152,6 +189,7 @@ class ReseauTests(unittest.TestCase):
         self.assertEqual(f.echanger({'type':'commande','revision':1})['type'],'erreur')
 
     def test_fenetre_connexion_panne_reconnexion_et_fermeture(self):
+        """Vérifie la connexion Qt, l'arrêt au rouge, la reprise et la fermeture."""
         f=FenetrePrincipale(densite=0)
         f.accidents_aleatoires.setChecked(False)
         f.port_serveur.setValue(self.serveur.port)
@@ -185,11 +223,21 @@ class ReseauTests(unittest.TestCase):
             f.close()
 
     def test_serveur_mu_et_garde_fou_interface(self):
+        """Retarde le serveur pour vérifier que l'interface suspend la simulation au rouge."""
         f=FenetrePrincipale(densite=0)
         f.port_serveur.setValue(self.serveur.port)
         original=self.serveur.traiter_maquette
         bloquer=threading.Event(); liberer=threading.Event()
         def retard(role,message):
+            """Retarde une mesure si le blocage est activé, puis appelle le traitement initial.
+
+            Args:
+                role (str): Rôle du client à l'origine du message.
+                message (dict): Message reçu par le serveur de test.
+
+            Returns:
+                dict: Réponse du traitement initial du serveur.
+            """
             if message['type']=='mesure' and bloquer.is_set(): liberer.wait(3)
             return original(role,message)
         self.serveur.traiter_maquette=retard
@@ -209,7 +257,9 @@ class ReseauTests(unittest.TestCase):
 
 
 class SimulationTests(unittest.TestCase):
+    """Teste les déplacements, les accidents et les expériences comparatives."""
     def test_scenarios_densites_directions_et_securite(self):
+        """Vérifie les traversées et les espacements pour plusieurs densités et directions."""
         for densite in (0,45,100):
             for direction in 'NSEO':
                 f=FenetrePrincipale(densite,2026,True)
@@ -231,6 +281,7 @@ class SimulationTests(unittest.TestCase):
                 finally:f.close()
 
     def test_accident_ambulance_derriere_et_degagement(self):
+        """Vérifie que l'ambulance attend derrière l'accident puis termine sa mission."""
         f=FenetrePrincipale(0,2026,True);f.accidents_aleatoires.setChecked(False)
         try:
             v=f.creer_voiture('N','#63b3ed');v['distance']=180
@@ -244,6 +295,7 @@ class SimulationTests(unittest.TestCase):
         finally:f.close()
 
     def test_comparaison_reproductible_et_csv(self):
+        """Vérifie la reproductibilité, le gain de priorité et la présence des mesures CSV."""
         resultats=[]
         for _ in range(2):
             d=Comparaison(None,45,'N',FenetrePrincipale);d.calcul.stop()

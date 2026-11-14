@@ -27,11 +27,27 @@ class Controleur:
     """Six phases ; aucune ouverture d'axe tant que le centre est occupé."""
 
     def __init__(self):
+        """Initialise le cycle avec une seconde de tout rouge et aucune priorité."""
         self.phase = 5
         self.restant = 1.0
         self.ancienne_cible = None
 
     def avancer(self, mesure):
+        """Calcule la prochaine commande des feux à partir des capteurs.
+
+        Les transitions respectent l'occupation du carrefour, les piétons
+        engagés et la demande de priorité. Le pas normal vaut 40 ms.
+
+        Args:
+            mesure (dict): Occupation, ambulance, priorité et état des piétons.
+
+        Returns:
+            dict: Phase, temps restant, couleurs, autorisation des piétons
+                et explication de la décision.
+
+        Raises:
+            ValueError: Si une mesure contient une valeur invalide.
+        """
         verifier_mesure(mesure)
         direction = mesure["ambulance"] if mesure["priorite"] else None
         cible = None if direction is None else (0 if direction in "NS" else 3)

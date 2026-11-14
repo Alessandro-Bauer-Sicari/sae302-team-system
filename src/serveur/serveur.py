@@ -44,6 +44,16 @@ class Serveur:
     """Un thread par client, avec un verrou pour les collections partagées."""
 
     def __init__(self, hote="127.0.0.1", port=PORT_SERVEUR, stockage=None):
+        """Prépare le serveur, les verrous et l'état initial des feux au rouge.
+
+        Args:
+            hote (str): Adresse locale sur laquelle écouter.
+            port (int): Port TCP ; zéro laisse le système choisir un port libre.
+            stockage (StockageMariaDB | None): Accès à la base, ou None pour
+                désactiver les opérations MariaDB.
+
+        Le socket d'écoute sera créé lors de l'appel à demarrer().
+        """
         self.stockage = stockage
         self.hote = hote
         self.port = port

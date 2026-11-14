@@ -7,12 +7,20 @@ from ..controleur import verifier_commande
 
 
 class ClientReseauQt(QThread):
+    """Gère les trois connexions TCP dans un thread et informe Qt par signaux."""
     connecte = pyqtSignal()
     etat_recu = pyqtSignal(dict)
     erreur = pyqtSignal(str)
     reponse_bdd = pyqtSignal(dict)
 
     def __init__(self, hote, port, parent=None):
+        """Prépare le thread réseau et sa file de quatre demandes maximum.
+
+        Args:
+            hote (str): Adresse du serveur.
+            port (int): Port TCP du serveur.
+            parent (QObject | None): Objet Qt propriétaire du thread.
+        """
         super().__init__(parent)
         self.hote, self.port = hote, port
         self.arret = threading.Event()
@@ -32,9 +40,30 @@ class ClientReseauQt(QThread):
             raise ValueError("Une demande est déjà en attente") from None
 
     def run(self):
+        """Connecte les trois clients et traite les demandes jusqu'à l'arrêt.
+
+        Chaque mesure passe par le capteur, le régulateur puis les feux.
+        Les demandes MariaDB passent par le régulateur. Les réponses et
+        les erreurs sont transmises par signaux ; les sockets sont fermés
+        à la sortie, même si un échange échoue.
+        """
         clients = {role: Client(role, self.hote, self.port)
                    for role in ("regulateur", "capteur", "feux")}
         def demander(role, message, attendu):
+            """Envoie un message et vérifie le type et la révision de la réponse.
+
+            Args:
+                role (str): Client à utiliser pour l'échange.
+                message (dict): Message à envoyer au serveur.
+                attendu (str): Type de réponse attendu.
+
+            Returns:
+                dict: Réponse validée du serveur.
+
+            Raises:
+                ValueError: Si le type ou la révision de la réponse est incorrect.
+                OSError: Si la connexion échoue pendant l'échange.
+            """
             reponse = clients[role].echanger(message)
             if reponse["type"] != attendu:
                 raise ValueError(reponse.get("message", "Réponse réseau inattendue"))

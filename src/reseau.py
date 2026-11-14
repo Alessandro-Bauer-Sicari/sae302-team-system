@@ -47,6 +47,11 @@ class ConnexionJSON:
     """
 
     def __init__(self, connexion):
+        """Prépare le tampon de réception et le verrou d'envoi du socket.
+
+        Args:
+            connexion (socket.socket): Socket déjà connecté à l'autre programme.
+        """
         self.connexion = connexion
         self.tampon = bytearray()
         self.verrou_envoi = threading.Lock()

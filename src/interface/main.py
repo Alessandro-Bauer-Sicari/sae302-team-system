@@ -46,6 +46,15 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
     """Assemble le dessin, la simulation et les commandes utilisateur."""
 
     def __init__(self, densite=45, graine=None, mode_comparaison=False):
+        """Construit l'interface et initialise les usagers et le contrôleur.
+
+        Args:
+            densite (int): Probabilité d'arrivée des voitures, de 0 à 100.
+            graine (int | None): Graine du générateur d'arrivées pour rejouer
+                le même trafic, ou None pour ne pas la fixer.
+            mode_comparaison (bool): Désactive l'horloge automatique et les
+                commandes réseau pour laisser l'expérience piloter les étapes.
+        """
         super().__init__()
         self.mode_comparaison = mode_comparaison
         self.client_reseau = None
@@ -229,6 +238,7 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
             self.recevoir_etat_reseau(commande)
 
     def ouvrir_historique(self):
+        """Suspend la simulation pendant l'historique, puis applique la réponse différée."""
         if not self.reseau_pret or self.client_reseau is None:
             QMessageBox.information(self, "Historique", "Connecte d'abord la maquette au serveur.")
             return
@@ -270,6 +280,11 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         self.appliquer_commande(self.controleur.avancer(self.relever_capteurs()))
 
     def pas_animation(self):
+        """Avance localement ou transmet une mesure au serveur selon le mode.
+
+        Ne lance pas une deuxième mesure tant que la précédente est en attente.
+        Une attente réseau dépassant une seconde suspend la simulation au rouge.
+        """
         if self.pause:
             return
         if not self.mode_reseau:
@@ -284,12 +299,14 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
             self.client_reseau.proposer(self.relever_capteurs())
 
     def mettre_au_rouge(self):
+        """Affiche tous les feux au rouge avec une seconde de temps restant."""
         self.phase = 5
         self.temps_restant = 1
         self.appliquer_phase()
         self.afficher_etat()
 
     def reprendre_local(self):
+        """Recrée le contrôleur local au rouge si le thread réseau est terminé."""
         if self.client_reseau is not None:
             return
         self.mode_reseau = False
@@ -355,6 +372,7 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         self.client_reseau.start()
 
     def connexion_etablie(self):
+        """Signale dans l'interface que les trois clients sont connectés au serveur."""
         if self.client_reseau.arret.is_set():
             return
         self.reseau_pret = True
@@ -363,6 +381,13 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         self.journaliser("Trois clients TCP connectés : le serveur commande les feux")
 
     def recevoir_etat_reseau(self, commande):
+        """Applique la commande du serveur ou la garde pendant une pause.
+
+        Args:
+            commande (dict): État des feux et numéro de révision reçus du réseau.
+
+        Les réponses d'un thread arrêté ou supprimé sont ignorées.
+        """
         if self.client_reseau is None or self.client_reseau.arret.is_set():
             return
         if self.pause:
@@ -373,6 +398,11 @@ class FenetrePrincipale(DessinCarrefour, SimulationCarrefour, QMainWindow):
         self.etat_reseau.setText(f"  Serveur actif — étape {commande['revision']}")
 
     def signaler_erreur_reseau(self, message):
+        """Suspend les échanges de simulation, affiche le rouge et journalise l'erreur.
+
+        Args:
+            message (str): Explication du problème réseau.
+        """
         self.derniere_erreur_reseau = message
         self.reseau_pret = False
         self.en_attente = False

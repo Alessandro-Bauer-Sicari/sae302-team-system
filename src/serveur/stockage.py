@@ -68,7 +68,19 @@ def verifier_bilan(bilan):
 
 
 class StockageMariaDB:
+    """Valide et conserve les comparaisons dans une base MariaDB."""
     def __init__(self, **options):
+        """Charge le connecteur MariaDB et prépare les options de connexion.
+
+        Args:
+            **options: Paramètres du connecteur qui remplacent les valeurs
+                par défaut ou celles des variables TEAM_SYSTEM_DB_*.
+
+        Raises:
+            ErreurStockage: Si le connecteur Python MariaDB n'est pas installé.
+
+        La connexion est ouverte seulement au moment d'une opération.
+        """
         try:
             import mariadb
         except ImportError:
@@ -83,12 +95,25 @@ class StockageMariaDB:
         self.options.update(options)
 
     def connecter(self):
+        """Ouvre une connexion MariaDB avec les options configurées.
+
+        Returns:
+            mariadb.Connection: Connexion que l'appelant devra fermer.
+
+        Raises:
+            ErreurStockage: Si MariaDB refuse la connexion ou est inaccessible.
+        """
         try:
             return self.pilote.connect(**self.options)
         except self.pilote.Error:
             raise ErreurStockage("MariaDB inaccessible : vérifier le service et lancer bdd/installer.sh") from None
 
     def verifier(self):
+        """Vérifie que les deux tables sont accessibles, puis ferme la connexion.
+
+        Raises:
+            ErreurStockage: Si la connexion, les tables ou les droits manquent.
+        """
         connexion = self.connecter()
         try:
             curseur = connexion.cursor()
@@ -100,6 +125,22 @@ class StockageMariaDB:
             connexion.close()
 
     def enregistrer(self, bilan):
+        """Enregistre une comparaison et ses deux résultats dans une transaction.
+
+        Un réessai avec le même identifiant et le même contenu renvoie
+        l'identifiant existant. Une erreur SQL annule la transaction.
+
+        Args:
+            bilan (dict): Paramètres et résultats sans puis avec priorité.
+
+        Returns:
+            int: Identifiant SQL de la comparaison enregistrée ou déjà présente.
+
+        Raises:
+            ValueError: Si le bilan est invalide ou si son identifiant désigne
+                déjà un contenu différent.
+            ErreurStockage: Si la connexion ou une opération SQL échoue.
+        """
         bilan = verifier_bilan(bilan)
         empreinte = hashlib.sha256(json.dumps(bilan, sort_keys=True, allow_nan=False).encode()).hexdigest()
         connexion = self.connecter()

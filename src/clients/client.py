@@ -35,6 +35,16 @@ class Client:
     """
 
     def __init__(self, role, hote="127.0.0.1", port=PORT_SERVEUR):
+        """Mémorise le rôle et l'adresse du serveur, sans encore se connecter.
+
+        Args:
+            role (str): Rôle parmi regulateur, capteur et feux.
+            hote (str): Adresse du serveur.
+            port (int): Port TCP du serveur.
+
+        Raises:
+            ValueError: Si le rôle ne fait pas partie des rôles autorisés.
+        """
         if role not in ROLES:
             raise ValueError("Rôle inconnu : choisir regulateur, capteur ou feux.")
         self.role = role

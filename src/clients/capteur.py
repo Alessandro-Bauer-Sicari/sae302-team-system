@@ -27,6 +27,12 @@ class Capteur(Client):
     """Envoie les informations d'une ambulance à la fois."""
 
     def __init__(self, hote="127.0.0.1", port=PORT_SERVEUR):
+        """Prépare le client capteur sans ouvrir de connexion.
+
+        Args:
+            hote (str): Adresse du serveur.
+            port (int): Port TCP du serveur.
+        """
         super().__init__("capteur", hote, port)
 
     def signaler(self, direction, arrivee=True):

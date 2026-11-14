@@ -9,7 +9,9 @@ from ..controleur import Controleur, verifier_mesure
 
 
 class Maquette:
+    """Coordonne les étapes mesure, calcul et commande d'une session réseau."""
     def __init__(self):
+        """Crée le contrôleur et attend la première mesure de la session."""
         self.controleur = Controleur()
         self.revision = 0
         self.etape = "mesure"
@@ -17,6 +19,19 @@ class Maquette:
         self.commande = None
 
     def traiter(self, role, message):
+        """Traite un message en vérifiant le rôle et l'ordre des étapes.
+
+        Args:
+            role (str): Rôle du client qui envoie le message.
+            message (dict): Message de mesure, de calcul ou de commande
+                contenant un numéro de révision.
+
+        Returns:
+            dict: Accusé de réception ou commande des feux pour cette révision.
+
+        Raises:
+            ValueError: Si le rôle, la révision ou l'ordre des étapes est invalide.
+        """
         revision = message.get("revision")
         if type(revision) is not int:
             raise ValueError("Révision entière obligatoire")
